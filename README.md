@@ -31,29 +31,31 @@ irreversível no Windows.
 # 1. No PowerShell do Windows, uma vez:
 wsl --install -d Ubuntu
 
-# 2. Já dentro do Ubuntu:
+# 2. Dentro do Ubuntu, dependências de sistema:
 sudo apt update
 sudo apt install -y tesseract-ocr tesseract-ocr-eng python3-venv python3-pip
 
+# 3. O resto é o script:
 cd "/mnt/c/Users/Perdido/.antigravity/tradução"
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e '.[dev]'
+bash scripts/setup-wsl.sh            # acrescente --free para incluir o Argos
+source ~/.venvs/mangatl/bin/activate
 
-# 3. Chave da API (só para o motor `claude`):
+# 4. Chave da API (só para o motor `claude`):
 cp .env.example .env && nano .env
 
-# 4. Conferir:
+# 5. Conferir:
 mangatl doctor
 ```
 
-O projeto fica em `/mnt/c/...` de propósito: as imagens continuam visíveis no
-Explorer do Windows e você pode servir o leitor pelos dois lados.
+**O venv fica em `~/.venvs/mangatl`, no filesystem Linux — não em `/mnt/c`.** O
+DrvFs não suporta as operações de permissão que o pip faz ao instalar, e um venv
+criado ali falha com `OSError: [Errno 1] Operation not permitted`. O código-fonte
+continua em `/mnt/c` sem problema: as imagens seguem visíveis no Explorer.
 
 ### Motor gratuito (opcional)
 
 ```bash
-pip install -e '.[free]'
+bash scripts/setup-wsl.sh --free
 mangatl setup-free          # baixa o modelo Argos en->pt, ~100MB, uma vez
 ```
 
@@ -157,24 +159,33 @@ mas não terá posição para a Fase 2.
 
 ## Ler no celular
 
-`mangatl serve` imprime o endereço da LAN. Abra no celular, e use "Adicionar à tela
-de início" — o service worker guarda as páginas e as traduções do capítulo visitado,
-então ele reabre sem rede depois da primeira visita.
-
-Se o servidor rodar dentro do WSL e o celular não alcançar, sirva pelo Windows: como
-os arquivos estão em `/mnt/c`, o `http.server` da stdlib funciona lá sem depender de
-nenhuma biblioteca nativa.
+**Sirva pelo Windows, não pelo WSL.** O `mangatl serve` roda, mas o IP que ele
+imprime é o endereço interno do WSL (`172.x.x.x`), que o celular não alcança. Como os
+arquivos estão em `/mnt/c`, o `http.server` da stdlib serve do lado do Windows — e ele
+não usa nenhuma biblioteca nativa, então o Smart App Control não o bloqueia:
 
 ```powershell
 python -m http.server 8000 --directory "C:\Users\Perdido\.antigravity\tradução"
 ```
 
+Depois abra `http://<ip-do-pc>:8000/reader/` no celular (`ipconfig` mostra o IP) e use
+"Adicionar à tela de início". O service worker guarda as páginas e as traduções do
+capítulo visitado, então ele reabre sem rede depois da primeira visita.
+
+`mangatl serve` continua útil para testar no próprio PC, em
+`http://localhost:8000/reader/`.
+
 ---
 
 ## Estado atual
 
-Fase 1 completa: extração, tradução pelos dois motores, e leitor com o texto ao lado
-da página.
+Fase 1 completa e verificada em execução: 72 testes passando, extração ponta a ponta
+(detecção → ordem de leitura → OCR → `extract.json`), tradução pelo motor `free`
+gerando `chapter.free.json`, reprocessamento idempotente, e o leitor servindo todos
+os arquivos.
 
-Fase 2 (texto escrito dentro do balão, com inpainting) ainda não foi implementada. A
-fundação está pronta — cada fala traduzida já carrega a `bbox` do balão de origem.
+O motor `claude` tem o formato de request e o parsing cobertos por testes com cliente
+dublê, mas ainda não foi exercitado contra a API real — falta a chave.
+
+Fase 2 (texto escrito dentro do balão, com inpainting) não foi implementada. A
+fundação está pronta: cada fala traduzida já carrega a `bbox` do balão de origem.
