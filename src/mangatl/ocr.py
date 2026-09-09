@@ -23,7 +23,7 @@ from .models import BBox
 
 _WHITESPACE = re.compile(r"\s+")
 _HYPHEN_BREAK = re.compile(r"(\w)-\s+(\w)")
-_PIPE_AS_I = re.compile(r"(?<=[A-Za-z])\|(?=[A-Za-z])|(?<=\s)\|(?=[A-Za-z])|(?<=[A-Za-z])\|(?=\s)")
+_PIPE_AS_I = re.compile(r"(?<!\|)\|(?!\|)")
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
