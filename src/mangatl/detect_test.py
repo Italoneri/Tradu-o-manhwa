@@ -17,11 +17,21 @@ def blank_page() -> np.ndarray:
 
 
 def draw_bubble(page: np.ndarray, box: BBox, *, lines: int = 4) -> None:
+    """Balao branco com texto renderizado de verdade.
+
+    Barras solidas dariam densidade de tinta irreal (100% da linha, contra ~15%
+    de glifo real) e fariam o teste calibrar os thresholds no valor errado.
+    """
     cv2.rectangle(page, (box.x, box.y), (box.right, box.bottom), 255, -1)
     cv2.rectangle(page, (box.x, box.y), (box.right, box.bottom), 0, 3)
     for line in range(lines):
-        top = box.y + 24 + line * 32
-        cv2.rectangle(page, (box.x + 20, top), (box.right - 20, top + 14), 0, -1)
+        baseline = box.y + 40 + line * 32
+        if baseline > box.bottom - 12:
+            break
+        cv2.putText(
+            page, "ALGUMA FALA AQUI", (box.x + 16, baseline),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.6, 0, 2, cv2.LINE_AA,
+        )
 
 
 def matches(found: list[BBox], expected: BBox, *, min_iou: float = 0.5) -> bool:

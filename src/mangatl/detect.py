@@ -37,9 +37,30 @@ def _ink_ratio(ink_mask: np.ndarray, box: BBox) -> float:
     return float(np.count_nonzero(region)) / region.size
 
 
-def _mean_brightness(gray: np.ndarray, box: BBox) -> float:
+def _inset(box: BBox, fraction: float = 0.08, minimum: int = 3) -> BBox:
+    """Encolhe a caixa para excluir o proprio contorno do balao.
+
+    O contorno e tinta, e sem isso um balao vazio passa no teste de "tem texto"
+    so pela borda que o desenha.
+    """
+    margin_x = max(minimum, round(box.w * fraction))
+    margin_y = max(minimum, round(box.h * fraction))
+    if box.w - 2 * margin_x < 1 or box.h - 2 * margin_y < 1:
+        return box
+    return BBox(x=box.x + margin_x, y=box.y + margin_y, w=box.w - 2 * margin_x, h=box.h - 2 * margin_y)
+
+
+def _paper_brightness(gray: np.ndarray, ink_mask: np.ndarray, box: BBox) -> float:
+    """Brilho do fundo do balao, ignorando o texto.
+
+    Medir a media da caixa inteira confunde "balao branco com muito texto" com
+    "regiao escura de arte": o texto derruba a media exatamente onde ele deveria
+    ser evidencia a favor.
+    """
     region = gray[box.y : box.bottom, box.x : box.right]
-    return float(region.mean()) if region.size else 0.0
+    ink = ink_mask[box.y : box.bottom, box.x : box.right]
+    paper = region[ink == 0]
+    return float(paper.mean()) if paper.size else 0.0
 
 
 def _passes_shape_filters(box: BBox, contour_area: float, page_area: int, cfg: DetectConfig) -> bool:
@@ -94,9 +115,9 @@ def _detect_enclosed_bubbles(gray: np.ndarray, ink: np.ndarray, cfg: DetectConfi
         box = _bbox_of(contour)
         if not _passes_shape_filters(box, cv2.contourArea(contour), page_area, cfg):
             continue
-        if _mean_brightness(gray, box) < cfg.min_interior_brightness:
+        if _paper_brightness(gray, ink, box) < cfg.min_interior_brightness:
             continue
-        if not (cfg.min_ink_ratio <= _ink_ratio(ink, box) <= cfg.max_ink_ratio):
+        if not (cfg.min_ink_ratio <= _ink_ratio(ink, _inset(box)) <= cfg.max_ink_ratio):
             continue
         candidates.append(box)
     return candidates
@@ -122,9 +143,12 @@ def _detect_text_blobs(gray: np.ndarray, ink: np.ndarray, cfg: DetectConfig) -> 
         area_ratio = box.area / page_area
         if not (cfg.min_area_ratio <= area_ratio <= cfg.max_area_ratio):
             continue
-        if not (cfg.min_ink_ratio <= _ink_ratio(ink, box) <= cfg.max_ink_ratio):
+        # Inset profundo de proposito: bloco de texto tem tinta no miolo, contorno
+        # de balao vazio so tem tinta na borda. Sem isso a dilatacao transforma a
+        # borda de um balao sem texto num falso bloco.
+        if _ink_ratio(ink, _inset(box, fraction=0.25)) < cfg.min_ink_ratio:
             continue
-        if _mean_brightness(gray, box) < cfg.min_interior_brightness:
+        if _paper_brightness(gray, ink, box) < cfg.min_interior_brightness:
             continue
         candidates.append(box)
     return candidates
