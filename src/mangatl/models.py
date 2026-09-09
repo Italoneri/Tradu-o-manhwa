@@ -1,0 +1,135 @@
+"""Contratos de dados do pipeline.
+
+Dois artefatos independentes atravessam o sistema:
+
+    Extraction  - OCR cru, agnostico de motor de traducao, cacheado por sha da imagem
+    Chapter     - saida de um motor especifico, e o unico arquivo que o leitor le
+
+Manter os dois separados e o que permite trocar `--engine` sem rodar OCR de novo.
+"""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict, Field
+
+PIPELINE_VERSION = 1
+"""Sobe quando detect/ocr/ordering mudam de forma que invalida extracoes salvas."""
+
+
+class Frozen(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class BBox(Frozen):
+    x: int = Field(ge=0)
+    y: int = Field(ge=0)
+    w: int = Field(gt=0)
+    h: int = Field(gt=0)
+
+    @property
+    def right(self) -> int:
+        return self.x + self.w
+
+    @property
+    def bottom(self) -> int:
+        return self.y + self.h
+
+    @property
+    def area(self) -> int:
+        return self.w * self.h
+
+    @property
+    def center_y(self) -> float:
+        return self.y + self.h / 2
+
+    def intersection_area(self, other: BBox) -> int:
+        overlap_w = min(self.right, other.right) - max(self.x, other.x)
+        overlap_h = min(self.bottom, other.bottom) - max(self.y, other.y)
+        if overlap_w <= 0 or overlap_h <= 0:
+            return 0
+        return overlap_w * overlap_h
+
+    def iou(self, other: BBox) -> float:
+        intersection = self.intersection_area(other)
+        if intersection == 0:
+            return 0.0
+        return intersection / (self.area + other.area - intersection)
+
+    def merged_with(self, other: BBox) -> BBox:
+        x = min(self.x, other.x)
+        y = min(self.y, other.y)
+        return BBox(x=x, y=y, w=max(self.right, other.right) - x, h=max(self.bottom, other.bottom) - y)
+
+
+class ExtractedBlock(Frozen):
+    id: str
+    bbox: BBox
+    raw_text: str
+    confidence: float = Field(ge=0.0, le=100.0)
+
+
+class ExtractedPage(Frozen):
+    index: int = Field(ge=1)
+    image: str
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    image_sha256: str
+    blocks: tuple[ExtractedBlock, ...] = ()
+
+
+class Extraction(Frozen):
+    series: str
+    chapter: str
+    pipeline_version: int
+    pages: tuple[ExtractedPage, ...] = ()
+
+    def page_by_image(self, image: str) -> ExtractedPage | None:
+        return next((page for page in self.pages if page.image == image), None)
+
+
+class TranslatedBlock(Frozen):
+    id: str
+    bbox: BBox | None = None
+    """None quando o motor achou uma fala que a deteccao local nao pegou.
+
+    O leitor mostra o texto normalmente; a Fase 2 nao consegue sobrepor essas.
+    """
+    source_text: str
+    text: str
+
+
+class TranslatedPage(Frozen):
+    index: int = Field(ge=1)
+    image: str
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    blocks: tuple[TranslatedBlock, ...] = ()
+
+
+class Chapter(Frozen):
+    series: str
+    chapter: str
+    engine: str
+    model: str | None = None
+    pipeline_version: int
+    created_at: str
+    pages: tuple[TranslatedPage, ...] = ()
+
+
+class ChapterEntry(Frozen):
+    chapter: str
+    page_count: int
+    engines: tuple[str, ...]
+
+
+class SeriesEntry(Frozen):
+    series: str
+    chapters: tuple[ChapterEntry, ...]
+
+
+class Library(Frozen):
+    generated_at: str
+    library_base: str
+    """Prefixo das imagens originais, relativo a raiz servida - o leitor nao adivinha caminho."""
+    output_base: str
+    series: tuple[SeriesEntry, ...] = ()

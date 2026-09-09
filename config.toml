@@ -1,0 +1,50 @@
+# Ajuste os thresholds de [detect] olhando as caixas desenhadas por --debug-boxes.
+
+[paths]
+library = "library"
+output = "output"
+
+[translation]
+engine = "claude"
+model = "claude-sonnet-5"
+source_lang = "en"
+target_lang = "pt"
+chunk_pages = 12          # paginas por request a API
+max_image_side = 1568     # px do lado maior enviado; acima disso nao melhora o OCR do modelo
+timeout_seconds = 600.0
+max_retries = 3
+effort = "medium"
+
+# Estimativa de custo para o log. Atualize se a tabela de precos mudar (USD por 1M tokens).
+[pricing.claude-sonnet-5]
+input = 2.0
+output = 10.0
+cache_read = 0.20
+
+[pricing.claude-opus-5]
+input = 5.0
+output = 25.0
+cache_read = 0.50
+
+[ocr]
+lang = "eng"
+psm = 6                   # "bloco uniforme de texto" - o recorte ja isolou um balao
+upscale = 3               # Tesseract quer ~30px de altura de caixa alta
+padding = 4
+min_confidence = 45.0
+min_chars = 3
+
+[detect]
+min_area_ratio = 0.002
+max_area_ratio = 0.25
+min_aspect = 0.15
+max_aspect = 8.0
+min_fill_ratio = 0.55           # balao e convexo; mancha de arte nao
+min_interior_brightness = 200.0 # balao branco
+min_ink_ratio = 0.02            # abaixo disso o balao esta vazio
+max_ink_ratio = 0.40            # acima disso e arte escura, nao texto
+merge_iou = 0.30
+
+[reading_order]
+rtl = false               # true para manga japones
+band_overlap = 0.40

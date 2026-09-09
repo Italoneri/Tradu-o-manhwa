@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mangatl"
+version = "0.1.0"
+description = "Tradutor em lote de mahuas/mangas EN->PT com leitor web offline"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.69",
+    "opencv-python>=4.10",
+    "pytesseract>=0.3.13",
+    "pillow>=10.4",
+    "pydantic>=2.9",
+    "typer>=0.12",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+free = ["argostranslate>=1.9"]
+dev = ["pytest>=8.3"]
+
+[project.scripts]
+mangatl = "mangatl.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mangatl"]
+
+[tool.pytest.ini_options]
+python_files = ["*_test.py"]
+testpaths = ["src/mangatl"]
+addopts = "-q"

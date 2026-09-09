@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111318">
+<title>mangatl</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="bar" id="bar">
+  <a class="back" id="back" href="index.html" hidden aria-label="Voltar para a biblioteca">&#8592;</a>
+  <div class="title">
+    <strong id="title">mangatl</strong>
+    <span id="subtitle"></span>
+  </div>
+  <div class="controls">
+    <label class="engine" id="engine-picker" hidden>
+      <span>motor</span>
+      <select id="engine"></select>
+    </label>
+    <button id="toggle-lines" class="ghost" hidden aria-pressed="true">falas</button>
+  </div>
+</header>
+
+<main id="main" aria-live="polite">
+  <p class="empty" id="status">Carregando biblioteca&hellip;</p>
+</main>
+
+<nav class="pager" id="pager" hidden>
+  <button id="prev" class="ghost">&#8592; anterior</button>
+  <span id="progress"></span>
+  <button id="next" class="ghost">proximo &#8594;</button>
+</nav>
+
+<script src="app.js"></script>
+</body>
+</html>
