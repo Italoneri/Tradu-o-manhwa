@@ -18,6 +18,7 @@ from .slicing import (
     quiet_level,
     slice_chapter_in_place,
     slice_image,
+    slice_stream,
 )
 
 WIDTH = 200
@@ -144,7 +145,7 @@ def test_writes_one_file_per_slice(tmp_path: Path, cfg: SlicingConfig):
 
     assert len(written) == len(plan_cuts(image, cfg))
     assert [path.name for path in written] == [
-        f"captura-{index:03d}.png" for index in range(1, len(written) + 1)
+        f"p{index:04d}.png" for index in range(1, len(written) + 1)
     ]
     assert all(path.is_file() for path in written)
 
@@ -203,3 +204,65 @@ def test_reports_a_source_it_cannot_decode(tmp_path: Path, cfg: SlicingConfig):
 
     with pytest.raises(ValueError, match="decodificar"):
         slice_chapter_in_place(tmp_path, [broken], cfg)
+
+
+def parts(tmp_path: Path, heights: list[int]) -> list[Path]:
+    """Captura partida num teto fixo, como um macro de rolagem entrega."""
+    written = []
+    for index, height in enumerate(heights, start=1):
+        path = tmp_path / f"parte_{index:02d}.png"
+        cv2.imwrite(str(path), strip(height=height, gutters=()))
+        written.append(path)
+    return written
+
+
+def test_numbers_slices_continuously_across_files(tmp_path: Path, cfg: SlicingConfig):
+    written = slice_stream(parts(tmp_path, [1500, 1500]), tmp_path / "saida", cfg)
+
+    assert [path.name for path in written] == [
+        f"p{index:04d}.png" for index in range(1, len(written) + 1)
+    ]
+
+
+def test_stream_reassembles_into_the_concatenated_source(tmp_path: Path, cfg: SlicingConfig):
+    """Nenhuma linha se perde nem se duplica na fronteira entre arquivos."""
+    heights = [1500, 1500, 900]
+    sources = parts(tmp_path, heights)
+    expected = np.vstack([cv2.imread(str(path), cv2.IMREAD_GRAYSCALE) for path in sources])
+
+    written = slice_stream(sources, tmp_path / "saida", cfg)
+    rebuilt = np.vstack([cv2.imread(str(path), cv2.IMREAD_GRAYSCALE) for path in written])
+
+    assert rebuilt.shape == expected.shape
+    assert np.array_equal(rebuilt, expected)
+
+
+def test_carries_content_across_a_file_boundary(tmp_path: Path, cfg: SlicingConfig):
+    """A fronteira do macro nao pode virar fronteira de fatia.
+
+    Sem o carry, cada arquivo fatiaria isolado e toda fronteira entre arquivos
+    seria tambem um corte - exatamente onde o macro ja partiu um balao ao meio.
+    """
+    sources = parts(tmp_path, [1500, 1500])
+    written = slice_stream(sources, tmp_path / "saida", cfg)
+
+    alturas = [cv2.imread(str(path), cv2.IMREAD_GRAYSCALE).shape[0] for path in written]
+    fronteiras = set()
+    total = 0
+    for altura in alturas[:-1]:
+        total += altura
+        fronteiras.add(total)
+
+    assert 1500 not in fronteiras
+
+
+def test_flushes_the_carry_when_the_next_part_has_another_width(tmp_path: Path, cfg: SlicingConfig):
+    first = tmp_path / "parte_01.png"
+    second = tmp_path / "parte_02.png"
+    cv2.imwrite(str(first), strip(height=1500, gutters=()))
+    cv2.imwrite(str(second), np.full((1500, WIDTH * 2), 255, dtype=np.uint8))
+
+    written = slice_stream([first, second], tmp_path / "saida", cfg)
+
+    assert len(written) > 0
+    assert {cv2.imread(str(path), cv2.IMREAD_GRAYSCALE).shape[1] for path in written} == {WIDTH, WIDTH * 2}

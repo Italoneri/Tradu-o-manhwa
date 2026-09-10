@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from .config import Config, load_config
 from .engines.base import TranslationError, UnknownEngineError, available_engines, create_engine
 from .pipeline import ChapterNotFoundError, extract_chapter, translate_chapter
-from .slicing import is_tall, slice_image
+from .slicing import is_tall, slice_stream
 from .store import IMAGE_SUFFIXES, build_library, discover_chapters, save_library
 
 app = typer.Typer(add_completion=False, help="Traduz capitulos de manga/mahua EN->PT e serve um leitor web.")
@@ -200,14 +200,16 @@ def slice_command(
         typer.secho("nenhuma captura alta; importando as imagens como paginas", fg=typer.colors.YELLOW)
 
     destination = cfg.library_dir / series / chapter
-    written = 0
-    for path in chosen:
-        if path in tall:
-            written += len(slice_image(path, destination, cfg.slicing))
-        else:
-            destination.mkdir(parents=True, exist_ok=True)
+    if tall:
+        # Uma chamada so para todas: o macro corta a captura num teto fixo de altura,
+        # e esse corte parte baloes ao meio. Fatiar em fluxo continuo remonta o que
+        # ficou dividido entre dois arquivos.
+        written = len(slice_stream(tall, destination, cfg.slicing))
+    else:
+        destination.mkdir(parents=True, exist_ok=True)
+        for path in chosen:
             shutil.copy2(path, destination / path.name)
-            written += 1
+        written = len(chosen)
 
     typer.secho(f"{len(chosen)} origem(ns) -> {written} pagina(s) em {destination}", fg=typer.colors.GREEN)
     typer.echo(f"agora: mangatl process library/{series}/{chapter} --dry-run --debug-boxes")

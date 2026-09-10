@@ -155,29 +155,78 @@ def _encode_params(cfg: SlicingConfig) -> tuple[str, list[int]]:
     return ".jpg", [cv2.IMWRITE_JPEG_QUALITY, cfg.quality]
 
 
-def slice_image(path: Path, destination: Path, cfg: SlicingConfig) -> list[Path]:
-    """Escreve as fatias de `path` em `destination` e devolve os caminhos criados."""
+def _read(path: Path) -> np.ndarray:
     image = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError(f"nao consegui decodificar a imagem {path}")
+    return image
 
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    bounds = plan_cuts(gray, cfg)
-    suffix, params = _encode_params(cfg)
 
-    destination.mkdir(parents=True, exist_ok=True)
-    written: list[Path] = []
-    for index, (top, bottom) in enumerate(bounds, start=1):
-        target = destination / f"{path.stem}-{index:03d}{suffix}"
-        if not cv2.imwrite(str(target), image[top:bottom], params):
+class _SliceWriter:
+    """Numeracao continua das fatias, independente de qual arquivo as originou."""
+
+    def __init__(self, destination: Path, cfg: SlicingConfig) -> None:
+        self._destination = destination
+        self._suffix, self._params = _encode_params(cfg)
+        self._count = 0
+        self.written: list[Path] = []
+        destination.mkdir(parents=True, exist_ok=True)
+
+    def write(self, band: np.ndarray) -> None:
+        self._count += 1
+        target = self._destination / f"p{self._count:04d}{self._suffix}"
+        if not cv2.imwrite(str(target), band, self._params):
             raise ValueError(f"nao consegui escrever {target}")
-        written.append(target)
+        self.written.append(target)
+
+
+def slice_stream(paths: Sequence[Path], destination: Path, cfg: SlicingConfig) -> list[Path]:
+    """Fatia varias capturas como se fossem uma tira continua.
+
+    Um macro de rolagem corta a captura num teto fixo de altura - 12000px na captura
+    de teste - e esse corte e cego: medido ali, um balao terminava com o arco no fim
+    de um arquivo e o texto no comeco do proximo, virando duas metades ilegiveis.
+
+    Por isso o resto nao fatiado de um arquivo e carregado para o inicio do seguinte
+    antes de procurar a proxima costura. O carry nunca passa de uma fatia, entao a
+    memoria fica limitada ao arquivo atual.
+    """
+    writer = _SliceWriter(destination, cfg)
+    carry: np.ndarray | None = None
+
+    for position, path in enumerate(paths):
+        image = _read(path)
+
+        if carry is not None:
+            if carry.shape[1] != image.shape[1]:
+                # Largura diferente nao empilha; a tira anterior fecha aqui.
+                writer.write(carry)
+            else:
+                image = np.vstack([carry, image])
+            carry = None
+
+        bounds = plan_cuts(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), cfg)
+        is_last_file = position == len(paths) - 1
+        keep = bounds if is_last_file else bounds[:-1]
+
+        for top, bottom in keep:
+            writer.write(image[top:bottom])
+        if not is_last_file:
+            carry = image[bounds[-1][0] :].copy()
+
+    if carry is not None:
+        writer.write(carry)
 
     log.info(
-        "operation=slice image=%s height=%d slices=%d",
-        path.name, gray.shape[0], len(written),
+        "operation=slice sources=%d slices=%d",
+        len(paths), len(writer.written),
     )
-    return written
+    return writer.written
+
+
+def slice_image(path: Path, destination: Path, cfg: SlicingConfig) -> list[Path]:
+    """Fatia uma captura isolada."""
+    return slice_stream([path], destination, cfg)
 
 
 def slice_chapter_in_place(chapter_dir: Path, images: Sequence[Path], cfg: SlicingConfig) -> list[Path]:
@@ -186,19 +235,26 @@ def slice_chapter_in_place(chapter_dir: Path, images: Sequence[Path], cfg: Slici
     Idempotente: um capitulo ja fatiado nao tem mais imagem alta solta, entao
     rodar de novo nao faz nada.
     """
-    written: list[Path] = []
+    tall: list[Path] = []
     for path in images:
         header = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
         if header is None:
             raise ValueError(f"nao consegui decodificar a imagem {path}")
         height, width = header.shape[:2]
-        if not is_tall(width, height, cfg):
-            continue
+        if is_tall(width, height, cfg):
+            tall.append(path)
 
-        del header
-        written.extend(slice_image(path, chapter_dir, cfg))
-        archive = chapter_dir / SOURCE_DIRNAME
-        archive.mkdir(parents=True, exist_ok=True)
+    if not tall:
+        return []
+
+    # Todas de uma vez, e nao uma a uma: as capturas de um capitulo sao partes de
+    # uma tira so, e fatiar cada arquivo isoladamente manteria os baloes partidos
+    # exatamente nas fronteiras entre eles.
+    written = slice_stream(tall, chapter_dir, cfg)
+
+    archive = chapter_dir / SOURCE_DIRNAME
+    archive.mkdir(parents=True, exist_ok=True)
+    for path in tall:
         shutil.move(str(path), str(archive / path.name))
 
     return written
