@@ -29,9 +29,12 @@ def test_cleans_ocr_text(name: str, raw: str, expected: str):
 @pytest.mark.parametrize(
     ("name", "text", "confidence", "expected"),
     [
-        ("aceita texto longo mesmo com confianca baixa", "WHAT IS GOING ON", 12.0, True),
-        ("aceita texto curto com confianca alta", "NO", 90.0, True),
-        ("descarta texto curto e pouco confiavel", "x", 10.0, False),
+        ("aceita fala curta com confianca alta", "NO", 90.0, True),
+        ("aceita fala com pontuacao pesada", "WHAT?! NO...", 80.0, True),
+        ("aceita fala com numero", "1000 YEARS", 85.0, True),
+        ("descarta texto longo com confianca baixa", "WHAT IS GOING ON", 12.0, False),
+        ("descarta simbolo solto mesmo com confianca alta", "(", 64.0, False),
+        ("descarta ruido de arte com uma letra so", "e@", 48.0, False),
         ("descarta texto vazio", "", 99.0, False),
     ],
 )

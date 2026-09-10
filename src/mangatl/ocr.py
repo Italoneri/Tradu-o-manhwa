@@ -84,11 +84,14 @@ def read_block(image: np.ndarray, box: BBox, cfg: OcrConfig) -> tuple[str, float
 
 
 def is_usable(text: str, confidence: float, cfg: OcrConfig) -> bool:
-    """Descarta apenas o que e curto E pouco confiavel ao mesmo tempo.
+    """Aceita so o que parece fala: confianca minima E letras de verdade.
 
-    Texto longo com confianca baixa costuma ser OCR embaralhado de fala real -
-    vale mandar para o motor, que com a imagem em maos consegue corrigir.
+    A deteccao de balao produz falso-positivo em arte clara - manto branco, fundo
+    palido - e o OCR devolve simbolo solto com confianca baixa. Filtrar aqui, e nao
+    afrouxar a deteccao, e o ponto certo: um balao perdido o motor `claude` recupera
+    sozinho a partir da imagem (com bbox nulo), enquanto um bloco de ruido nao tem
+    como ser desfeito depois - ele custa token e polui a lista de falas.
     """
-    if not text:
+    if confidence < cfg.min_confidence:
         return False
-    return len(text) >= cfg.min_chars or confidence >= cfg.min_confidence
+    return sum(char.isalpha() for char in text) >= cfg.min_letters
