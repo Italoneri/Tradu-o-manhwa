@@ -60,7 +60,13 @@ def _paper_brightness(gray: np.ndarray, ink_mask: np.ndarray, box: BBox) -> floa
     region = gray[box.y : box.bottom, box.x : box.right]
     ink = ink_mask[box.y : box.bottom, box.x : box.right]
     paper = region[ink == 0]
-    return float(paper.mean()) if paper.size else 0.0
+    if not paper.size:
+        return 0.0
+    # Mediana, nao media: texto com efeito de brilho tem um halo cinza em volta
+    # das letras que nao e tinta mas puxa a media para baixo. Medido numa pagina
+    # real, esse halo levou o papel a 198 contra o corte de 200 e o texto foi
+    # descartado por dois pontos. A mediana ignora a minoria de pixels do halo.
+    return float(np.median(paper))
 
 
 def _passes_shape_filters(box: BBox, contour_area: float, page_area: int, cfg: DetectConfig) -> bool:
@@ -124,11 +130,11 @@ def _detect_enclosed_bubbles(gray: np.ndarray, ink: np.ndarray, cfg: DetectConfi
 
 
 def _detect_text_blobs(gray: np.ndarray, ink: np.ndarray, cfg: DetectConfig) -> list[BBox]:
-    """Fallback para paginas sem balao fechado: aglomera tinta em blocos de texto.
+    """Aglomera tinta em blocos, para texto que nao mora dentro de balao.
 
     Dilatar a mascara de tinta funde letras vizinhas numa mancha por linha e por
-    paragrafo. Pega legenda sem borda; erra em arte densa, por isso so roda
-    quando a deteccao principal nao achou nada.
+    paragrafo. Pega legenda sem borda, SFX e texto estilizado - o que a deteccao
+    de balao fechado nao tem como ver, porque nao ha balao.
     """
     horizontal = max(3, gray.shape[1] // 60)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (horizontal, 5))
@@ -162,9 +168,12 @@ def detect_bubbles(image: np.ndarray, cfg: DetectConfig) -> list[BBox]:
     gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     _, ink = cv2.threshold(gray, INK_THRESHOLD, 255, cv2.THRESH_BINARY_INV)
 
-    boxes = _detect_enclosed_bubbles(gray, ink, cfg)
-    if not boxes:
-        boxes = _detect_text_blobs(gray, ink, cfg)
+    # Os dois detectores sempre, e nao um como reserva do outro: texto sem balao
+    # convive com balao na mesma pagina, e enquanto isto era um fallback ele so
+    # rodava em paginas totalmente vazias - bastava um balao para o texto solto
+    # da mesma pagina ficar invisivel. O excesso de candidato e barato porque o
+    # OCR e quem filtra.
+    boxes = _detect_enclosed_bubbles(gray, ink, cfg) + _detect_text_blobs(gray, ink, cfg)
     return _merge_overlapping(boxes, cfg.merge_iou)
 
 
