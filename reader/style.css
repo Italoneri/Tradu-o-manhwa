@@ -45,6 +45,12 @@
 
 * { box-sizing: border-box; }
 
+/* Sem isto o atributo hidden nao funciona nos elementos com display proprio:
+   a regra do UA e display:none sem !important, e qualquer display declarado
+   depois ganha dela. Vale para a seta de voltar, o seletor de motor e a
+   paginacao, que aparecem na biblioteca quando so deviam existir no leitor. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);

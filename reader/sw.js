@@ -44,7 +44,11 @@ async function cacheFirst(request) {
 
 async function networkFirst(request) {
   try {
-    const response = await fetch(request);
+    // no-cache revalida com o servidor em vez de confiar no cache HTTP do browser.
+    // Sem isso o shell atualizado fica preso atras de uma copia velha e so aparece
+    // depois de uma recarga forcada - o cache do service worker nao e o culpado,
+    // o do browser e.
+    const response = await fetch(new Request(request, { cache: "no-cache" }));
     if (response.ok) {
       const cache = await caches.open(VERSION);
       cache.put(request, response.clone());
