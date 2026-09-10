@@ -200,11 +200,22 @@ nenhuma* é o sintoma que importa.
 nenhuma palavra. Toda fala real tem ao menos uma palavra, então subir esse valor
 rejeita ruído sem poder descartar diálogo.
 | Balão partido em vários | suba `merge_iou` |
+| Texto estilizado ou SFX perdido | baixe `min_interior_brightness` |
 | Ordem errada entre balões lado a lado | ajuste `band_overlap` em `[reading_order]` |
 
 Balões sem borda e SFX estilizado escapam da heurística. Com o motor `claude` isso é
 recuperável: ele vê a página e devolve a fala com `bbox` nulo — aparece no leitor,
 mas não terá posição para a Fase 2.
+
+### Um erro que não dá para corrigir localmente
+
+O Tesseract confunde letra com dígito em fonte estilizada: `SO` vira `50` ou `90`.
+Medido nesta captura, blacklistar dígitos acerta a palavra em 2 de 3 casos — mas a
+confiança não diz qual está certo (num deles a leitura errada pontua *mais* alto), e
+blacklistar sempre corromperia números legítimos como `50 YEARS`.
+
+Não há correção local segura. O motor `claude` resolve porque vê a página e
+reconstrói a fala antes de traduzir; o `free` não tem como perceber.
 
 ---
 
