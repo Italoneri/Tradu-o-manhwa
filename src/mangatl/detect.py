@@ -168,13 +168,26 @@ def detect_bubbles(image: np.ndarray, cfg: DetectConfig) -> list[BBox]:
     return _merge_overlapping(boxes, cfg.merge_iou)
 
 
-def draw_boxes(image: np.ndarray, boxes: list[BBox]) -> np.ndarray:
-    """Copia de `image` com as caixas numeradas na ordem recebida."""
+KEPT_COLOR = (60, 180, 60)
+DROPPED_COLOR = (60, 60, 220)
+
+
+def draw_boxes(image: np.ndarray, kept: list[BBox], dropped: list[BBox] = []) -> np.ndarray:
+    """Copia de `image` com as caixas marcadas, para calibrar os thresholds a olho.
+
+    Verde numerado e o que virou fala; vermelho e o que o detector achou e o filtro
+    de OCR descartou. Separar os dois e o que diz qual ajuste fazer: muito vermelho
+    significa deteccao solta demais, e balao sem caixa nenhuma significa o contrario.
+    """
     canvas = image.copy() if image.ndim == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    for position, box in enumerate(boxes, start=1):
-        cv2.rectangle(canvas, (box.x, box.y), (box.right, box.bottom), (0, 0, 255), 2)
+
+    for box in dropped:
+        cv2.rectangle(canvas, (box.x, box.y), (box.right, box.bottom), DROPPED_COLOR, 2)
+
+    for position, box in enumerate(kept, start=1):
+        cv2.rectangle(canvas, (box.x, box.y), (box.right, box.bottom), KEPT_COLOR, 3)
         cv2.putText(
-            canvas, str(position), (box.x + 4, box.y + 24),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA,
+            canvas, str(position), (box.x + 4, box.y + 26),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.9, KEPT_COLOR, 2, cv2.LINE_AA,
         )
     return canvas

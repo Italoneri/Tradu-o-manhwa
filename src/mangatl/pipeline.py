@@ -21,6 +21,7 @@ from .detect import detect_bubbles, draw_boxes
 from .engines.base import TranslationEngine
 from .models import (
     PIPELINE_VERSION,
+    BBox,
     Chapter,
     ExtractedBlock,
     ExtractedPage,
@@ -28,6 +29,7 @@ from .models import (
 )
 from .ocr import is_usable, read_block
 from .ordering import reading_order
+from .slicing import slice_chapter_in_place
 from .store import (
     chapter_output_dir,
     image_sha256,
@@ -85,23 +87,27 @@ def _extract_page(
     )
     ordered = [boxes[position] for position in order]
 
-    if debug_dir is not None:
-        debug_dir.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(debug_dir / f"{path.stem}.png"), draw_boxes(image, ordered))
-
     blocks: list[ExtractedBlock] = []
-    for position, box in enumerate(ordered, start=1):
+    kept: list[BBox] = []
+    dropped: list[BBox] = []
+    for box in ordered:
         text, confidence = read_block(image, box, cfg.ocr)
         if not is_usable(text, confidence, cfg.ocr):
+            dropped.append(box)
             continue
+        kept.append(box)
         blocks.append(
             ExtractedBlock(
-                id=f"p{index:03d}-b{position:02d}",
+                id=f"p{index:03d}-b{len(kept):02d}",
                 bbox=box,
                 raw_text=text,
                 confidence=confidence,
             )
         )
+
+    if debug_dir is not None:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(debug_dir / f"{path.stem}.png"), draw_boxes(image, kept, dropped))
 
     return ExtractedPage(
         index=index,
@@ -126,6 +132,11 @@ def extract_chapter(
     images = list_page_images(chapter_dir)
     if not images:
         raise ChapterNotFoundError(f"nenhuma imagem em {chapter_dir}")
+
+    # Captura de rolagem vira paginas normais antes de qualquer outra coisa, para
+    # que o resto do pipeline nunca precise saber que ela existiu.
+    if slice_chapter_in_place(chapter_dir, images, cfg.slicing):
+        images = list_page_images(chapter_dir)
 
     previous = None if force else load_extraction(cfg, series, chapter)
     debug_dir = chapter_output_dir(cfg, series, chapter) / "debug" if debug_boxes else None
