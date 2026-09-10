@@ -84,12 +84,39 @@ personagem de mudar de nome no capítulo seguinte:
 }
 ```
 
+### Captura de rolagem (webtoon)
+
+Se as páginas vêm de um macro que rola a tela e costura tudo numa imagem alta, use
+`slice` para importar — ele corta em páginas antes do OCR:
+
+```bash
+mangatl slice "/mnt/c/Users/<voce>/.../CapturaRolagem/<data>" minha-serie 001
+```
+
+Ele fatia só as capturas altas. Numa pasta onde convivem a costura final e os prints
+brutos que a geraram, os prints são ignorados — eles se sobrepõem entre si e
+duplicariam as falas.
+
+Fatiar não é opcional para esse formato. Uma captura de 1004x29799 quebra o pipeline
+em três pontos: a imagem enviada à API é reduzida ao lado maior, e 29799px viram 53px
+de largura (o texto deixa de existir para o modelo); os filtros de área em `[detect]`
+são proporcionais à área da página, então o balão mínimo aceito fica 20x maior; e cada
+página passa de 100MB descomprimida.
+
+O corte procura a linha com menos tinta perto da altura alvo, para não partir balão ao
+meio. Ele desconta as colunas de moldura da captura antes de medir — uma borda de
+poucos pixels põe tinta em toda linha da página e apagaria as calhas entre painéis.
+
+Se você já tem as imagens dentro de `library/`, o `process` fatia sozinho e guarda os
+originais em `library/<serie>/<cap>/_source/`. Rodar de novo não refatia nada.
+
 ---
 
 ## Uso
 
 ```bash
 mangatl doctor                                   # o que falta instalar
+mangatl slice <pasta> <serie> <capitulo>         # importa captura de rolagem, já fatiada
 mangatl process library/serie/001                # um capítulo, motor padrão
 mangatl process library/serie/001 --engine free  # sem custo de API
 mangatl process-all serie                        # a série toda; inalterados são no-op
@@ -141,13 +168,22 @@ Este é o passo que decide a qualidade de tudo depois. Antes de gastar API:
 mangatl process library/serie/001 --dry-run --debug-boxes
 ```
 
-Abra os PNGs em `output/serie/001/debug/`. As caixas vermelhas numeradas mostram o
-que foi detectado e em que ordem de leitura. Ajuste `[detect]` no `config.toml`:
+Abra os PNGs em `output/serie/001/debug/`. Duas cores, e a diferença entre elas é
+que diz qual botão girar:
+
+- **verde numerado** — virou fala, na ordem de leitura mostrada
+- **vermelho** — o detector achou, e o filtro de OCR descartou por não parecer texto
+
+Vermelho não é erro: a detecção de balão é deliberadamente solta, e o OCR é quem
+decide. Muito vermelho só incomoda se estiver custando tempo. Balão *sem caixa
+nenhuma* é o sintoma que importa.
 
 | Sintoma | Ajuste |
 |---|---|
 | Perdeu balões | baixe `min_fill_ratio` ou `min_interior_brightness` |
-| Pegou arte como balão | suba `min_fill_ratio`, estreite `min_ink_ratio`/`max_ink_ratio` |
+| Perdeu balão de contorno claro | suba `INK_THRESHOLD` em `detect.py` |
+| Fala boa descartada (aparece vermelha) | baixe `min_confidence` em `[ocr]` |
+| Muito ruído de arte virando fala | suba `min_confidence` ou `min_letters` |
 | Balão partido em vários | suba `merge_iou` |
 | Ordem errada entre balões lado a lado | ajuste `band_overlap` em `[reading_order]` |
 
