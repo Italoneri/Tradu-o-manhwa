@@ -73,6 +73,44 @@ def _read_image(path: Path) -> np.ndarray:
     return image
 
 
+def _drop_repeated_readings(
+    readings: list[tuple[BBox, str, float]],
+) -> tuple[list[tuple[BBox, str, float]], list[BBox]]:
+    """Remove o mesmo texto lido duas vezes na mesma pagina.
+
+    Um balao dentro de um painel branco produz duas caixas: a do balao e a do
+    painel, que o contem parcialmente. Medido numa pagina real, elas tinham IoU
+    0.26 e sobreposicao de 0.52 da menor - abaixo dos dois criterios de fusao -
+    e as duas liam a mesma fala, que aparecia duplicada no leitor.
+
+    Exigir sobreposicao evita apagar repeticao legitima: duas falas iguais em
+    baloes distintos ("...", "NAO!") nao se cruzam. Entre as duas, fica a caixa
+    menor, que e a do balao e nao a do painel - e a que a Fase 2 precisa.
+    """
+    kept: list[tuple[BBox, str, float]] = []
+    removed: list[BBox] = []
+
+    for box, text, confidence in readings:
+        twin = next(
+            (
+                index
+                for index, (other, other_text, _) in enumerate(kept)
+                if other_text == text and other.intersection_area(box) > 0
+            ),
+            None,
+        )
+        if twin is None:
+            kept.append((box, text, confidence))
+            continue
+        if box.area < kept[twin][0].area:
+            removed.append(kept[twin][0])
+            kept[twin] = (box, text, confidence)
+        else:
+            removed.append(box)
+
+    return kept, removed
+
+
 def _extract_page(
     cfg: Config, path: Path, index: int, *, debug_dir: Path | None
 ) -> ExtractedPage:
@@ -87,23 +125,28 @@ def _extract_page(
     )
     ordered = [boxes[position] for position in order]
 
-    blocks: list[ExtractedBlock] = []
-    kept: list[BBox] = []
+    readings: list[tuple[BBox, str, float]] = []
     dropped: list[BBox] = []
     for box in ordered:
         text, confidence = read_block(image, box, cfg.ocr)
         if not is_usable(text, confidence, cfg.ocr):
             dropped.append(box)
             continue
-        kept.append(box)
-        blocks.append(
-            ExtractedBlock(
-                id=f"p{index:03d}-b{len(kept):02d}",
-                bbox=box,
-                raw_text=text,
-                confidence=confidence,
-            )
+        readings.append((box, text, confidence))
+
+    readings, duplicates = _drop_repeated_readings(readings)
+    dropped.extend(duplicates)
+
+    kept = [box for box, _, _ in readings]
+    blocks = [
+        ExtractedBlock(
+            id=f"p{index:03d}-b{position:02d}",
+            bbox=box,
+            raw_text=text,
+            confidence=confidence,
         )
+        for position, (box, text, confidence) in enumerate(readings, start=1)
+    ]
 
     if debug_dir is not None:
         debug_dir.mkdir(parents=True, exist_ok=True)
