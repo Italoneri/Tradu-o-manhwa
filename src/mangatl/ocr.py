@@ -83,6 +83,20 @@ def read_block(image: np.ndarray, box: BBox, cfg: OcrConfig) -> tuple[str, float
     return text, confidence
 
 
+def _longest_word(text: str) -> int:
+    """Maior sequencia de letras seguidas.
+
+    Contar letras soltas nao separa fala de ruido: "I I" e "r I" tem duas letras
+    cada e nenhuma palavra. Toda fala real tem pelo menos uma palavra, entao medir
+    a maior sequencia rejeita esse tipo de ruido sem poder descartar dialogo.
+    """
+    longest = current = 0
+    for char in text:
+        current = current + 1 if char.isalpha() else 0
+        longest = max(longest, current)
+    return longest
+
+
 def is_usable(text: str, confidence: float, cfg: OcrConfig) -> bool:
     """Aceita so o que parece fala: confianca minima E letras de verdade.
 
@@ -94,4 +108,4 @@ def is_usable(text: str, confidence: float, cfg: OcrConfig) -> bool:
     """
     if confidence < cfg.min_confidence:
         return False
-    return sum(char.isalpha() for char in text) >= cfg.min_letters
+    return _longest_word(text) >= cfg.min_letters

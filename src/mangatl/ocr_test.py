@@ -6,7 +6,7 @@ import pytest
 
 from .config import OcrConfig
 from .models import BBox
-from .ocr import clean_ocr_text, is_usable, prepare_crop, read_block, tesseract_available
+from .ocr import _longest_word, clean_ocr_text, is_usable, prepare_crop, read_block, tesseract_available
 
 
 @pytest.mark.parametrize(
@@ -35,6 +35,9 @@ def test_cleans_ocr_text(name: str, raw: str, expected: str):
         ("descarta texto longo com confianca baixa", "WHAT IS GOING ON", 12.0, False),
         ("descarta simbolo solto mesmo com confianca alta", "(", 64.0, False),
         ("descarta ruido de arte com uma letra so", "e@", 48.0, False),
+        ("descarta letras soltas sem formar palavra", "I I", 61.5, False),
+        ("descarta letra solta com pontuacao", "r I", 49.0, False),
+        ("aceita nome proprio incomum com confianca media", "RYUCHEONG?", 52.0, True),
         ("descarta texto vazio", "", 99.0, False),
     ],
 )
@@ -70,3 +73,11 @@ def test_reads_rendered_text_from_a_bubble():
 
     assert "HELLO" in text.upper()
     assert confidence > 0
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("", 0), ("(", 0), ("I I", 1), ("it", 2), ("WHAT?! NO...", 4), ("1000 YEARS", 5)],
+)
+def test_measures_the_longest_word(text: str, expected: int):
+    assert _longest_word(text) == expected
