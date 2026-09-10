@@ -97,6 +97,17 @@ Ele fatia só as capturas altas. Numa pasta onde convivem a costura final e os p
 brutos que a geraram, os prints são ignorados — eles se sobrepõem entre si e
 duplicariam as falas.
 
+**A pasta inteira é tratada como uma tira só.** Um macro de rolagem corta a captura
+num teto fixo de altura, e esse corte é cego: medido numa captura real, um balão
+terminava com o arco no fim de um arquivo e o texto no começo do seguinte, virando
+duas metades que o OCR lê como ruído. O que sobra de um arquivo é carregado para o
+início do próximo antes de procurar a próxima costura, então a fronteira do macro
+nunca vira fronteira de página. As fatias são numeradas em sequência contínua
+(`p0001.jpg`, `p0002.jpg`, …) porque uma fatia pode atravessar dois arquivos.
+
+Isso pressupõe que uma pasta é um capítulo. Se você capturar dois capítulos na mesma
+sessão, eles serão emendados — capture cada capítulo separado.
+
 Fatiar não é opcional para esse formato. Uma captura de 1004x29799 quebra o pipeline
 em três pontos: a imagem enviada à API é reduzida ao lado maior, e 29799px viram 53px
 de largura (o texto deixa de existir para o modelo); os filtros de área em `[detect]`
@@ -184,6 +195,10 @@ nenhuma* é o sintoma que importa.
 | Perdeu balão de contorno claro | suba `INK_THRESHOLD` em `detect.py` |
 | Fala boa descartada (aparece vermelha) | baixe `min_confidence` em `[ocr]` |
 | Muito ruído de arte virando fala | suba `min_confidence` ou `min_letters` |
+
+`min_letters` conta **letras seguidas**, não letras somadas: `"I I"` tem duas letras e
+nenhuma palavra. Toda fala real tem ao menos uma palavra, então subir esse valor
+rejeita ruído sem poder descartar diálogo.
 | Balão partido em vários | suba `merge_iou` |
 | Ordem errada entre balões lado a lado | ajuste `band_overlap` em `[reading_order]` |
 
