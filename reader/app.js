@@ -1,5 +1,7 @@
 /* Leitor estatico. Le os JSONs gerados pelo pipeline; nao chama API nenhuma. */
 
+import { bubbleRect, estimateFontCqw, fitFontSize } from "./overlay.js";
+
 const ROOT = "..";
 const params = new URLSearchParams(location.search);
 
@@ -11,7 +13,7 @@ const el = {
   back: document.getElementById("back"),
   enginePicker: document.getElementById("engine-picker"),
   engine: document.getElementById("engine"),
-  toggleLines: document.getElementById("toggle-lines"),
+  toggleOverlay: document.getElementById("toggle-overlay"),
   pager: document.getElementById("pager"),
   prev: document.getElementById("prev"),
   next: document.getElementById("next"),
@@ -121,37 +123,110 @@ function renderChapter(library, chapterData, entry, engine) {
     .map((name) => `<option value="${escapeHtml(name)}"${name === engine ? " selected" : ""}>${escapeHtml(name)}</option>`)
     .join("");
 
-  el.toggleLines.hidden = false;
+  el.toggleOverlay.hidden = false;
 
-  el.main.innerHTML = chapterData.pages
-    .map((page) => {
-      const lines = page.blocks.length
-        ? `<ol class="lines">${page.blocks
-            .map(
-              (block, index) => `
-          <li${block.bbox ? "" : ' class="floating"'}>
-            <span class="n">${Number(index) + 1}</span>
-            <div>
-              <p class="pt">${escapeHtml(block.text)}</p>
-              <p class="en">${escapeHtml(block.source_text)}</p>
-            </div>
-          </li>`,
-            )
-            .join("")}</ol>`
-        : `<p class="none">sem falas nesta pagina</p>`;
+  const slices = chapterData.pages.map((page) => sliceHtml(library, series, chapter, page)).join("");
+  el.main.innerHTML = `<div class="strip">${slices}</div>${orphansHtml(chapterData.pages)}`;
 
-      return `
-      <section class="page" id="pagina-${Number(page.index)}">
-        <img src="${escapeHtml(pageImageUrl(library, series, chapter, page.image))}"
-             width="${Number(page.width)}" height="${Number(page.height)}"
-             alt="Pagina ${Number(page.index)}" loading="lazy" decoding="async">
-        ${lines}
-      </section>`;
-    })
-    .join("");
-
+  fitOnScroll();
   setupPager(library, entry, engine);
   restoreScroll(series, chapter);
+}
+
+/* ---------- tira continua ---------- */
+
+/** Quatro decimais bastam num style inline; o resto e lixo de ponto flutuante. */
+function round(value) {
+  return Math.round(value * 1e4) / 1e4;
+}
+
+function bubbleHtml(block, page) {
+  const rect = bubbleRect(block.bbox, page);
+  const size = estimateFontCqw(block.bbox, page, block.text);
+  const box = `left:${round(rect.left)}%;top:${round(rect.top)}%;width:${round(rect.width)}%;--h:${round(rect.height)}%`;
+
+  return `<span class="bubble" style="${box};--size:${round(size)}" title="${escapeHtml(block.source_text)}"
+      ><span class="t">${escapeHtml(block.text)}</span></span>`;
+}
+
+/* Fatia sem margem nem moldura. A fronteira entre fatias e detalhe do
+   processamento: o capitulo e uma tira so, e e assim que ele deve aparecer. */
+function sliceHtml(library, series, chapter, page) {
+  const bubbles = page.blocks
+    .filter((block) => block.bbox)
+    .map((block) => bubbleHtml(block, page))
+    .join("");
+
+  return `<figure class="slice" id="fatia-${Number(page.index)}">
+    <img src="${escapeHtml(pageImageUrl(library, series, chapter, page.image))}"
+         width="${Number(page.width)}" height="${Number(page.height)}"
+         alt="Trecho ${Number(page.index)} do capitulo" loading="lazy" decoding="async">
+    ${bubbles}
+  </figure>`;
+}
+
+/* Fala que o motor achou e a deteccao local nao: sem bbox nao ha onde sobrepor.
+   Vai para o fim do capitulo em vez de desaparecer. */
+function orphansHtml(pages) {
+  const orphans = pages.flatMap((page) =>
+    page.blocks.filter((block) => !block.bbox).map((block) => ({ page: page.index, ...block })),
+  );
+  if (!orphans.length) return "";
+
+  return `<details class="orphans">
+    <summary>${orphans.length} fala(s) sem posicao na pagina</summary>
+    <ol>${orphans
+      .map(
+        (block) => `<li>
+          <span class="n">${Number(block.page)}</span>
+          <div>
+            <p class="pt">${escapeHtml(block.text)}</p>
+            <p class="en">${escapeHtml(block.source_text)}</p>
+          </div>
+        </li>`,
+      )
+      .join("")}</ol>
+  </details>`;
+}
+
+/* O ajuste de fonte le o layout ja pintado, entao acontece por fatia, quando ela
+   chega perto da tela. Medir as 155 na abertura travaria o capitulo. */
+function fitOnScroll() {
+  const observer = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        observer.unobserve(entry.target);
+        fitSlice(entry.target);
+      }
+    },
+    { rootMargin: "400px 0px" },
+  );
+
+  for (const slice of document.querySelectorAll(".slice")) observer.observe(slice);
+}
+
+function fitSlice(slice) {
+  for (const bubble of slice.querySelectorAll(".bubble")) {
+    const inner = bubble.firstElementChild;
+    const start = Number(bubble.style.getPropertyValue("--size"));
+    // A altura da caixa acompanha o texto, entao o alvo e a bbox do balao - o
+    // piso da caixa - e nao o que ela mede agora. Vem da fatia e nao de
+    // `getComputedStyle`, que devolve `min-height` percentual ainda em `%`.
+    const limit = (parseFloat(bubble.style.getPropertyValue("--h")) / 100) * slice.clientHeight;
+
+    // Mede o filho, e nao `scrollHeight` da caixa: o texto e centrado, e
+    // transbordo centrado sai pelos dois lados - scrollHeight so ve um.
+    const fitted = fitFontSize({
+      start,
+      overflows: (size) => {
+        bubble.style.setProperty("--size", String(size));
+        return inner.offsetHeight > limit;
+      },
+    });
+
+    bubble.style.setProperty("--size", String(round(fitted)));
+  }
 }
 
 function setupPager(library, entry, engine) {
@@ -247,21 +322,21 @@ function fail(message) {
 
 /* ---------- inicializacao ---------- */
 
-function setupLinesToggle() {
-  const visible = store.get("mangatl.lines", true);
-  document.body.classList.toggle("hide-lines", !visible);
-  el.toggleLines.setAttribute("aria-pressed", String(visible));
+function setupOverlayToggle() {
+  const visible = store.get("mangatl.overlay", true);
+  document.body.classList.toggle("hide-overlay", !visible);
+  el.toggleOverlay.setAttribute("aria-pressed", String(visible));
 
-  el.toggleLines.onclick = () => {
-    const next = document.body.classList.contains("hide-lines");
-    document.body.classList.toggle("hide-lines", !next);
-    el.toggleLines.setAttribute("aria-pressed", String(next));
-    store.set("mangatl.lines", next);
+  el.toggleOverlay.onclick = () => {
+    const next = document.body.classList.contains("hide-overlay");
+    document.body.classList.toggle("hide-overlay", !next);
+    el.toggleOverlay.setAttribute("aria-pressed", String(next));
+    store.set("mangatl.overlay", next);
   };
 }
 
 async function main() {
-  setupLinesToggle();
+  setupOverlayToggle();
 
   let library;
   try {

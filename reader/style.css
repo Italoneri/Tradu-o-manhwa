@@ -164,50 +164,81 @@ main { padding: 20px 16px 40px; max-width: 1100px; margin: 0 auto; }
   color: var(--ink-faint);
 }
 
-/* ---------- leitor ---------- */
+/* ---------- leitor: tira continua ---------- */
 
-.page {
-  display: grid;
-  gap: 14px;
-  margin-bottom: 28px;
-  padding-bottom: 28px;
-  border-bottom: 1px solid var(--line);
-}
-.page:last-child { border-bottom: 0; }
-
-.page img {
-  display: block;
-  width: 100%;
-  height: auto;
-  border-radius: var(--radius);
+/* A tira vai de borda a borda no celular - 16px de cada lado custam 7% da
+   largura da arte - e ganha cantos arredondados quando sobra espaco. */
+.strip {
+  position: relative;
+  margin-inline: -16px;
   background: var(--surface-2);
+  /* Container das bolhas. Fica aqui e nao na fatia porque `container-type` traz
+     containment de layout, que faz da fatia um contexto de empilhamento - e uma
+     bolha que cresceu para fora da fatia ficaria presa debaixo da fatia
+     seguinte, cortada ao meio. A largura e a mesma, entao `cqw` nao muda. */
+  container-type: inline-size;
 }
 
-.lines { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+@media (min-width: 640px) {
+  .strip { margin-inline: 0; border-radius: var(--radius); overflow: hidden; }
+}
 
-.lines li {
+.slice {
+  position: relative;
+  display: block;
+  margin: 0;
+}
+
+/* A fatia escalada arredonda a altura sozinha, e entre duas delas abre uma linha
+   de 1px do fundo. Sobrepor mata a linha, e custa justamente a linha de corte -
+   que o fatiamento escolheu por ser a de menos tinta da pagina. */
+.slice + .slice { margin-top: -1px; }
+
+.slice img { display: block; width: 100%; height: auto; }
+
+.bubble {
+  position: absolute;
+  /* Acima das imagens de todas as fatias, nao so da propria: a caixa que cresceu
+     passa da borda da fatia e tem de aparecer sobre a arte da seguinte. */
+  z-index: 1;
   display: grid;
-  grid-template-columns: 22px 1fr;
-  gap: 10px;
-  padding: 10px 12px;
+  place-items: center;
+  /* Altura automatica com piso na bbox: a caixa cobre o balao original e cresce
+     quando a fala traduzida nao cabe nele. Recortar perderia parte da fala, e
+     `--size` ja desceu ate o piso de legibilidade antes disso acontecer. */
+  min-height: var(--h);
+  border-radius: 8px;
+  /* O branco se estende 2px para fora: a borda reta da caixa encosta no interior
+     do balao, que a deteccao garante claro, em vez de cortar a arte em angulo. */
+  box-shadow: 0 0 0 2px #fff;
+  background: #fff;
+  color: #111;
+  font-size: calc(var(--size) * 1cqw);
+  font-weight: 600;
+  line-height: 1.15;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.bubble .t { padding: 2% 4%; hyphens: auto; overflow-wrap: break-word; }
+
+body.hide-overlay .bubble { display: none; }
+
+/* ---------- falas sem posicao ---------- */
+
+.orphans {
+  margin-top: 20px;
+  padding: 12px 14px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
-.lines .n { color: var(--accent); font-size: 12px; font-variant-numeric: tabular-nums; padding-top: 1px; }
-.lines .pt { margin: 0; }
-.lines .en { margin: 4px 0 0; font-size: 12.5px; color: var(--ink-faint); }
-.lines li.floating { border-style: dashed; }
-
-.page .none { color: var(--ink-faint); font-size: 13px; font-style: italic; padding: 6px 2px; }
-
-body.hide-lines .lines, body.hide-lines .page .none { display: none; }
-
-@media (min-width: 900px) {
-  .page { grid-template-columns: minmax(0, 1fr) 320px; align-items: start; }
-  .page .lines, .page .none { position: sticky; top: calc(var(--bar-h) + 16px); }
-  body.hide-lines .page { grid-template-columns: minmax(0, 1fr); }
-}
+.orphans summary { cursor: pointer; font-size: 13px; color: var(--ink-faint); }
+.orphans ol { margin: 12px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.orphans li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; }
+.orphans .n { color: var(--accent); font-size: 12px; font-variant-numeric: tabular-nums; padding-top: 1px; }
+.orphans .pt { margin: 0; }
+.orphans .en { margin: 4px 0 0; font-size: 12.5px; color: var(--ink-faint); }
 
 /* ---------- paginacao ---------- */
 

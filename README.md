@@ -204,8 +204,8 @@ rejeita ruído sem poder descartar diálogo.
 | Ordem errada entre balões lado a lado | ajuste `band_overlap` em `[reading_order]` |
 
 Balões sem borda e SFX estilizado escapam da heurística. Com o motor `claude` isso é
-recuperável: ele vê a página e devolve a fala com `bbox` nulo — aparece no leitor,
-mas não terá posição para a Fase 2.
+recuperável: ele vê a página e devolve a fala com `bbox` nulo — sem coordenada não há
+onde sobrepor, então o leitor a lista no fim do capítulo em vez de escondê-la.
 
 ### Um erro que não dá para corrigir localmente
 
@@ -216,6 +216,47 @@ blacklistar sempre corromperia números legítimos como `50 YEARS`.
 
 Não há correção local segura. O motor `claude` resolve porque vê a página e
 reconstrói a fala antes de traduzir; o `free` não tem como perceber.
+
+---
+
+## O leitor não mostra as fatias
+
+O fatiamento é etapa interna. O leitor monta o capítulo como uma tira contínua: as
+fatias entram coladas, sem moldura, margem ou borda, e a emenda cai justamente na
+linha de menos tinta que o corte escolheu — invisível no pixel. Cada fatia é
+sobreposta em 1px sobre a anterior, senão o arredondamento da altura em escala abre
+uma linha de fundo entre elas.
+
+A fala traduzida é escrita **dentro do balão**, numa caixa branca posicionada pela
+`bbox`. Tudo em unidade relativa: a posição em porcentagem da fatia, o tamanho da
+fonte em `cqw` (fração da largura da tira). Por isso o overlay acompanha qualquer
+largura de tela sem recalcular nada — 998px de origem viram 430px no celular e as
+coordenadas continuam certas.
+
+O botão **tradução** liga e desliga o overlay, e o estado fica guardado. Desligado,
+a arte aparece intacta.
+
+### Três limites conhecidos
+
+**Não há inpainting.** A caixa é branca e retangular, e o contorno do balão
+desaparece debaixo dela. Funciona porque a detecção só aceita balão de interior
+claro (`min_interior_brightness`), então o branco encosta na cor que já estava lá —
+mas num balão colorido ou em SFX a caixa fica visível.
+
+**O português é mais longo que o inglês.** Quando a fala não cabe, a fonte encolhe
+até o piso de legibilidade (`FONT_FLOOR_CQW`, ~28px na resolução de origem) e a
+partir dali **a caixa cresce** em vez de cortar o texto. Medido neste capítulo, o
+pior caso cresceu 1,63x da altura do balão. Perder um pedaço de arte é melhor que
+perder metade da fala; se preferir o contrário, baixe o piso em `reader/overlay.js`.
+
+**A bbox às vezes é do painel, não do balão.** Quando isso acontece a caixa branca
+tapa arte. O botão de tradução é a saída.
+
+A geometria e o dimensionamento são puros e testados:
+
+```bash
+node --test reader/overlay.test.js
+```
 
 ---
 
@@ -249,5 +290,7 @@ os arquivos.
 O motor `claude` tem o formato de request e o parsing cobertos por testes com cliente
 dublê, mas ainda não foi exercitado contra a API real — falta a chave.
 
-Fase 2 (texto escrito dentro do balão, com inpainting) não foi implementada. A
-fundação está pronta: cada fala traduzida já carrega a `bbox` do balão de origem.
+Fase 2 parcial: o texto traduzido já é escrito dentro do balão, sobre a tira
+contínua, verificado em execução no capítulo de teste (123 falas posicionadas, 16
+testes de geometria passando). Falta o inpainting — a caixa é branca e retangular,
+e apaga o contorno do balão junto com o texto original.
