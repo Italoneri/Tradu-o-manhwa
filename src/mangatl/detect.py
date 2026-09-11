@@ -37,9 +37,36 @@ def _ink_ratio(ink_mask: np.ndarray, box: BBox) -> float:
     return float(np.count_nonzero(region)) / region.size
 
 
-def _mean_brightness(gray: np.ndarray, box: BBox) -> float:
+def _inset(box: BBox, fraction: float = 0.08, minimum: int = 3) -> BBox:
+    """Encolhe a caixa para excluir o proprio contorno do balao.
+
+    O contorno e tinta, e sem isso um balao vazio passa no teste de "tem texto"
+    so pela borda que o desenha.
+    """
+    margin_x = max(minimum, round(box.w * fraction))
+    margin_y = max(minimum, round(box.h * fraction))
+    if box.w - 2 * margin_x < 1 or box.h - 2 * margin_y < 1:
+        return box
+    return BBox(x=box.x + margin_x, y=box.y + margin_y, w=box.w - 2 * margin_x, h=box.h - 2 * margin_y)
+
+
+def _paper_brightness(gray: np.ndarray, ink_mask: np.ndarray, box: BBox) -> float:
+    """Brilho do fundo do balao, ignorando o texto.
+
+    Medir a media da caixa inteira confunde "balao branco com muito texto" com
+    "regiao escura de arte": o texto derruba a media exatamente onde ele deveria
+    ser evidencia a favor.
+    """
     region = gray[box.y : box.bottom, box.x : box.right]
-    return float(region.mean()) if region.size else 0.0
+    ink = ink_mask[box.y : box.bottom, box.x : box.right]
+    paper = region[ink == 0]
+    if not paper.size:
+        return 0.0
+    # Mediana, nao media: texto com efeito de brilho tem um halo cinza em volta
+    # das letras que nao e tinta mas puxa a media para baixo. Medido numa pagina
+    # real, esse halo levou o papel a 198 contra o corte de 200 e o texto foi
+    # descartado por dois pontos. A mediana ignora a minoria de pixels do halo.
+    return float(np.median(paper))
 
 
 def _passes_shape_filters(box: BBox, contour_area: float, page_area: int, cfg: DetectConfig) -> bool:
@@ -94,20 +121,20 @@ def _detect_enclosed_bubbles(gray: np.ndarray, ink: np.ndarray, cfg: DetectConfi
         box = _bbox_of(contour)
         if not _passes_shape_filters(box, cv2.contourArea(contour), page_area, cfg):
             continue
-        if _mean_brightness(gray, box) < cfg.min_interior_brightness:
+        if _paper_brightness(gray, ink, box) < cfg.min_interior_brightness:
             continue
-        if not (cfg.min_ink_ratio <= _ink_ratio(ink, box) <= cfg.max_ink_ratio):
+        if not (cfg.min_ink_ratio <= _ink_ratio(ink, _inset(box)) <= cfg.max_ink_ratio):
             continue
         candidates.append(box)
     return candidates
 
 
 def _detect_text_blobs(gray: np.ndarray, ink: np.ndarray, cfg: DetectConfig) -> list[BBox]:
-    """Fallback para paginas sem balao fechado: aglomera tinta em blocos de texto.
+    """Aglomera tinta em blocos, para texto que nao mora dentro de balao.
 
     Dilatar a mascara de tinta funde letras vizinhas numa mancha por linha e por
-    paragrafo. Pega legenda sem borda; erra em arte densa, por isso so roda
-    quando a deteccao principal nao achou nada.
+    paragrafo. Pega legenda sem borda, SFX e texto estilizado - o que a deteccao
+    de balao fechado nao tem como ver, porque nao ha balao.
     """
     horizontal = max(3, gray.shape[1] // 60)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (horizontal, 5))
@@ -122,9 +149,12 @@ def _detect_text_blobs(gray: np.ndarray, ink: np.ndarray, cfg: DetectConfig) -> 
         area_ratio = box.area / page_area
         if not (cfg.min_area_ratio <= area_ratio <= cfg.max_area_ratio):
             continue
-        if not (cfg.min_ink_ratio <= _ink_ratio(ink, box) <= cfg.max_ink_ratio):
+        # Inset profundo de proposito: bloco de texto tem tinta no miolo, contorno
+        # de balao vazio so tem tinta na borda. Sem isso a dilatacao transforma a
+        # borda de um balao sem texto num falso bloco.
+        if _ink_ratio(ink, _inset(box, fraction=0.25)) < cfg.min_ink_ratio:
             continue
-        if _mean_brightness(gray, box) < cfg.min_interior_brightness:
+        if _paper_brightness(gray, ink, box) < cfg.min_interior_brightness:
             continue
         candidates.append(box)
     return candidates
@@ -138,19 +168,35 @@ def detect_bubbles(image: np.ndarray, cfg: DetectConfig) -> list[BBox]:
     gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     _, ink = cv2.threshold(gray, INK_THRESHOLD, 255, cv2.THRESH_BINARY_INV)
 
-    boxes = _detect_enclosed_bubbles(gray, ink, cfg)
-    if not boxes:
-        boxes = _detect_text_blobs(gray, ink, cfg)
+    # Os dois detectores sempre, e nao um como reserva do outro: texto sem balao
+    # convive com balao na mesma pagina, e enquanto isto era um fallback ele so
+    # rodava em paginas totalmente vazias - bastava um balao para o texto solto
+    # da mesma pagina ficar invisivel. O excesso de candidato e barato porque o
+    # OCR e quem filtra.
+    boxes = _detect_enclosed_bubbles(gray, ink, cfg) + _detect_text_blobs(gray, ink, cfg)
     return _merge_overlapping(boxes, cfg.merge_iou)
 
 
-def draw_boxes(image: np.ndarray, boxes: list[BBox]) -> np.ndarray:
-    """Copia de `image` com as caixas numeradas na ordem recebida."""
+KEPT_COLOR = (60, 180, 60)
+DROPPED_COLOR = (60, 60, 220)
+
+
+def draw_boxes(image: np.ndarray, kept: list[BBox], dropped: list[BBox] = []) -> np.ndarray:
+    """Copia de `image` com as caixas marcadas, para calibrar os thresholds a olho.
+
+    Verde numerado e o que virou fala; vermelho e o que o detector achou e o filtro
+    de OCR descartou. Separar os dois e o que diz qual ajuste fazer: muito vermelho
+    significa deteccao solta demais, e balao sem caixa nenhuma significa o contrario.
+    """
     canvas = image.copy() if image.ndim == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    for position, box in enumerate(boxes, start=1):
-        cv2.rectangle(canvas, (box.x, box.y), (box.right, box.bottom), (0, 0, 255), 2)
+
+    for box in dropped:
+        cv2.rectangle(canvas, (box.x, box.y), (box.right, box.bottom), DROPPED_COLOR, 2)
+
+    for position, box in enumerate(kept, start=1):
+        cv2.rectangle(canvas, (box.x, box.y), (box.right, box.bottom), KEPT_COLOR, 3)
         cv2.putText(
-            canvas, str(position), (box.x + 4, box.y + 24),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2, cv2.LINE_AA,
+            canvas, str(position), (box.x + 4, box.y + 26),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.9, KEPT_COLOR, 2, cv2.LINE_AA,
         )
     return canvas

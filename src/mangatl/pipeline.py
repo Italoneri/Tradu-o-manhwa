@@ -21,6 +21,7 @@ from .detect import detect_bubbles, draw_boxes
 from .engines.base import TranslationEngine
 from .models import (
     PIPELINE_VERSION,
+    BBox,
     Chapter,
     ExtractedBlock,
     ExtractedPage,
@@ -28,6 +29,7 @@ from .models import (
 )
 from .ocr import is_usable, read_block
 from .ordering import reading_order
+from .slicing import slice_chapter_in_place
 from .store import (
     chapter_output_dir,
     image_sha256,
@@ -71,6 +73,44 @@ def _read_image(path: Path) -> np.ndarray:
     return image
 
 
+def _drop_repeated_readings(
+    readings: list[tuple[BBox, str, float]],
+) -> tuple[list[tuple[BBox, str, float]], list[BBox]]:
+    """Remove o mesmo texto lido duas vezes na mesma pagina.
+
+    Um balao dentro de um painel branco produz duas caixas: a do balao e a do
+    painel, que o contem parcialmente. Medido numa pagina real, elas tinham IoU
+    0.26 e sobreposicao de 0.52 da menor - abaixo dos dois criterios de fusao -
+    e as duas liam a mesma fala, que aparecia duplicada no leitor.
+
+    Exigir sobreposicao evita apagar repeticao legitima: duas falas iguais em
+    baloes distintos ("...", "NAO!") nao se cruzam. Entre as duas, fica a caixa
+    menor, que e a do balao e nao a do painel - e a que a Fase 2 precisa.
+    """
+    kept: list[tuple[BBox, str, float]] = []
+    removed: list[BBox] = []
+
+    for box, text, confidence in readings:
+        twin = next(
+            (
+                index
+                for index, (other, other_text, _) in enumerate(kept)
+                if other_text == text and other.intersection_area(box) > 0
+            ),
+            None,
+        )
+        if twin is None:
+            kept.append((box, text, confidence))
+            continue
+        if box.area < kept[twin][0].area:
+            removed.append(kept[twin][0])
+            kept[twin] = (box, text, confidence)
+        else:
+            removed.append(box)
+
+    return kept, removed
+
+
 def _extract_page(
     cfg: Config, path: Path, index: int, *, debug_dir: Path | None
 ) -> ExtractedPage:
@@ -85,23 +125,32 @@ def _extract_page(
     )
     ordered = [boxes[position] for position in order]
 
-    if debug_dir is not None:
-        debug_dir.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(debug_dir / f"{path.stem}.png"), draw_boxes(image, ordered))
-
-    blocks: list[ExtractedBlock] = []
-    for position, box in enumerate(ordered, start=1):
+    readings: list[tuple[BBox, str, float]] = []
+    dropped: list[BBox] = []
+    for box in ordered:
         text, confidence = read_block(image, box, cfg.ocr)
         if not is_usable(text, confidence, cfg.ocr):
+            dropped.append(box)
             continue
-        blocks.append(
-            ExtractedBlock(
-                id=f"p{index:03d}-b{position:02d}",
-                bbox=box,
-                raw_text=text,
-                confidence=confidence,
-            )
+        readings.append((box, text, confidence))
+
+    readings, duplicates = _drop_repeated_readings(readings)
+    dropped.extend(duplicates)
+
+    kept = [box for box, _, _ in readings]
+    blocks = [
+        ExtractedBlock(
+            id=f"p{index:03d}-b{position:02d}",
+            bbox=box,
+            raw_text=text,
+            confidence=confidence,
         )
+        for position, (box, text, confidence) in enumerate(readings, start=1)
+    ]
+
+    if debug_dir is not None:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(debug_dir / f"{path.stem}.png"), draw_boxes(image, kept, dropped))
 
     return ExtractedPage(
         index=index,
@@ -126,6 +175,11 @@ def extract_chapter(
     images = list_page_images(chapter_dir)
     if not images:
         raise ChapterNotFoundError(f"nenhuma imagem em {chapter_dir}")
+
+    # Captura de rolagem vira paginas normais antes de qualquer outra coisa, para
+    # que o resto do pipeline nunca precise saber que ela existiu.
+    if slice_chapter_in_place(chapter_dir, images, cfg.slicing):
+        images = list_page_images(chapter_dir)
 
     previous = None if force else load_extraction(cfg, series, chapter)
     debug_dir = chapter_output_dir(cfg, series, chapter) / "debug" if debug_boxes else None

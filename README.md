@@ -31,29 +31,31 @@ irreversível no Windows.
 # 1. No PowerShell do Windows, uma vez:
 wsl --install -d Ubuntu
 
-# 2. Já dentro do Ubuntu:
+# 2. Dentro do Ubuntu, dependências de sistema:
 sudo apt update
 sudo apt install -y tesseract-ocr tesseract-ocr-eng python3-venv python3-pip
 
+# 3. O resto é o script:
 cd "/mnt/c/Users/Perdido/.antigravity/tradução"
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e '.[dev]'
+bash scripts/setup-wsl.sh            # acrescente --free para incluir o Argos
+source ~/.venvs/mangatl/bin/activate
 
-# 3. Chave da API (só para o motor `claude`):
+# 4. Chave da API (só para o motor `claude`):
 cp .env.example .env && nano .env
 
-# 4. Conferir:
+# 5. Conferir:
 mangatl doctor
 ```
 
-O projeto fica em `/mnt/c/...` de propósito: as imagens continuam visíveis no
-Explorer do Windows e você pode servir o leitor pelos dois lados.
+**O venv fica em `~/.venvs/mangatl`, no filesystem Linux — não em `/mnt/c`.** O
+DrvFs não suporta as operações de permissão que o pip faz ao instalar, e um venv
+criado ali falha com `OSError: [Errno 1] Operation not permitted`. O código-fonte
+continua em `/mnt/c` sem problema: as imagens seguem visíveis no Explorer.
 
 ### Motor gratuito (opcional)
 
 ```bash
-pip install -e '.[free]'
+bash scripts/setup-wsl.sh --free
 mangatl setup-free          # baixa o modelo Argos en->pt, ~100MB, uma vez
 ```
 
@@ -82,12 +84,50 @@ personagem de mudar de nome no capítulo seguinte:
 }
 ```
 
+### Captura de rolagem (webtoon)
+
+Se as páginas vêm de um macro que rola a tela e costura tudo numa imagem alta, use
+`slice` para importar — ele corta em páginas antes do OCR:
+
+```bash
+mangatl slice "/mnt/c/Users/<voce>/.../CapturaRolagem/<data>" minha-serie 001
+```
+
+Ele fatia só as capturas altas. Numa pasta onde convivem a costura final e os prints
+brutos que a geraram, os prints são ignorados — eles se sobrepõem entre si e
+duplicariam as falas.
+
+**A pasta inteira é tratada como uma tira só.** Um macro de rolagem corta a captura
+num teto fixo de altura, e esse corte é cego: medido numa captura real, um balão
+terminava com o arco no fim de um arquivo e o texto no começo do seguinte, virando
+duas metades que o OCR lê como ruído. O que sobra de um arquivo é carregado para o
+início do próximo antes de procurar a próxima costura, então a fronteira do macro
+nunca vira fronteira de página. As fatias são numeradas em sequência contínua
+(`p0001.jpg`, `p0002.jpg`, …) porque uma fatia pode atravessar dois arquivos.
+
+Isso pressupõe que uma pasta é um capítulo. Se você capturar dois capítulos na mesma
+sessão, eles serão emendados — capture cada capítulo separado.
+
+Fatiar não é opcional para esse formato. Uma captura de 1004x29799 quebra o pipeline
+em três pontos: a imagem enviada à API é reduzida ao lado maior, e 29799px viram 53px
+de largura (o texto deixa de existir para o modelo); os filtros de área em `[detect]`
+são proporcionais à área da página, então o balão mínimo aceito fica 20x maior; e cada
+página passa de 100MB descomprimida.
+
+O corte procura a linha com menos tinta perto da altura alvo, para não partir balão ao
+meio. Ele desconta as colunas de moldura da captura antes de medir — uma borda de
+poucos pixels põe tinta em toda linha da página e apagaria as calhas entre painéis.
+
+Se você já tem as imagens dentro de `library/`, o `process` fatia sozinho e guarda os
+originais em `library/<serie>/<cap>/_source/`. Rodar de novo não refatia nada.
+
 ---
 
 ## Uso
 
 ```bash
 mangatl doctor                                   # o que falta instalar
+mangatl slice <pasta> <serie> <capitulo>         # importa captura de rolagem, já fatiada
 mangatl process library/serie/001                # um capítulo, motor padrão
 mangatl process library/serie/001 --engine free  # sem custo de API
 mangatl process-all serie                        # a série toda; inalterados são no-op
@@ -139,42 +179,118 @@ Este é o passo que decide a qualidade de tudo depois. Antes de gastar API:
 mangatl process library/serie/001 --dry-run --debug-boxes
 ```
 
-Abra os PNGs em `output/serie/001/debug/`. As caixas vermelhas numeradas mostram o
-que foi detectado e em que ordem de leitura. Ajuste `[detect]` no `config.toml`:
+Abra os PNGs em `output/serie/001/debug/`. Duas cores, e a diferença entre elas é
+que diz qual botão girar:
+
+- **verde numerado** — virou fala, na ordem de leitura mostrada
+- **vermelho** — o detector achou, e o filtro de OCR descartou por não parecer texto
+
+Vermelho não é erro: a detecção de balão é deliberadamente solta, e o OCR é quem
+decide. Muito vermelho só incomoda se estiver custando tempo. Balão *sem caixa
+nenhuma* é o sintoma que importa.
 
 | Sintoma | Ajuste |
 |---|---|
 | Perdeu balões | baixe `min_fill_ratio` ou `min_interior_brightness` |
-| Pegou arte como balão | suba `min_fill_ratio`, estreite `min_ink_ratio`/`max_ink_ratio` |
+| Perdeu balão de contorno claro | suba `INK_THRESHOLD` em `detect.py` |
+| Fala boa descartada (aparece vermelha) | baixe `min_confidence` em `[ocr]` |
+| Muito ruído de arte virando fala | suba `min_confidence` ou `min_letters` |
+
+`min_letters` conta **letras seguidas**, não letras somadas: `"I I"` tem duas letras e
+nenhuma palavra. Toda fala real tem ao menos uma palavra, então subir esse valor
+rejeita ruído sem poder descartar diálogo.
 | Balão partido em vários | suba `merge_iou` |
+| Texto estilizado ou SFX perdido | baixe `min_interior_brightness` |
 | Ordem errada entre balões lado a lado | ajuste `band_overlap` em `[reading_order]` |
 
 Balões sem borda e SFX estilizado escapam da heurística. Com o motor `claude` isso é
-recuperável: ele vê a página e devolve a fala com `bbox` nulo — aparece no leitor,
-mas não terá posição para a Fase 2.
+recuperável: ele vê a página e devolve a fala com `bbox` nulo — sem coordenada não há
+onde sobrepor, então o leitor a lista no fim do capítulo em vez de escondê-la.
+
+### Um erro que não dá para corrigir localmente
+
+O Tesseract confunde letra com dígito em fonte estilizada: `SO` vira `50` ou `90`.
+Medido nesta captura, blacklistar dígitos acerta a palavra em 2 de 3 casos — mas a
+confiança não diz qual está certo (num deles a leitura errada pontua *mais* alto), e
+blacklistar sempre corromperia números legítimos como `50 YEARS`.
+
+Não há correção local segura. O motor `claude` resolve porque vê a página e
+reconstrói a fala antes de traduzir; o `free` não tem como perceber.
+
+---
+
+## O leitor não mostra as fatias
+
+O fatiamento é etapa interna. O leitor monta o capítulo como uma tira contínua: as
+fatias entram coladas, sem moldura, margem ou borda, e a emenda cai justamente na
+linha de menos tinta que o corte escolheu — invisível no pixel. Cada fatia é
+sobreposta em 1px sobre a anterior, senão o arredondamento da altura em escala abre
+uma linha de fundo entre elas.
+
+A fala traduzida é escrita **dentro do balão**, numa caixa branca posicionada pela
+`bbox`. Tudo em unidade relativa: a posição em porcentagem da fatia, o tamanho da
+fonte em `cqw` (fração da largura da tira). Por isso o overlay acompanha qualquer
+largura de tela sem recalcular nada — 998px de origem viram 430px no celular e as
+coordenadas continuam certas.
+
+O botão **tradução** liga e desliga o overlay, e o estado fica guardado. Desligado,
+a arte aparece intacta.
+
+### Três limites conhecidos
+
+**Não há inpainting.** A caixa é branca e retangular, e o contorno do balão
+desaparece debaixo dela. Funciona porque a detecção só aceita balão de interior
+claro (`min_interior_brightness`), então o branco encosta na cor que já estava lá —
+mas num balão colorido ou em SFX a caixa fica visível.
+
+**O português é mais longo que o inglês.** Quando a fala não cabe, a fonte encolhe
+até o piso de legibilidade (`FONT_FLOOR_CQW`, ~28px na resolução de origem) e a
+partir dali **a caixa cresce** em vez de cortar o texto. Medido neste capítulo, o
+pior caso cresceu 1,63x da altura do balão. Perder um pedaço de arte é melhor que
+perder metade da fala; se preferir o contrário, baixe o piso em `reader/overlay.js`.
+
+**A bbox às vezes é do painel, não do balão.** Quando isso acontece a caixa branca
+tapa arte. O botão de tradução é a saída.
+
+A geometria e o dimensionamento são puros e testados:
+
+```bash
+node --test reader/overlay.test.js
+```
 
 ---
 
 ## Ler no celular
 
-`mangatl serve` imprime o endereço da LAN. Abra no celular, e use "Adicionar à tela
-de início" — o service worker guarda as páginas e as traduções do capítulo visitado,
-então ele reabre sem rede depois da primeira visita.
-
-Se o servidor rodar dentro do WSL e o celular não alcançar, sirva pelo Windows: como
-os arquivos estão em `/mnt/c`, o `http.server` da stdlib funciona lá sem depender de
-nenhuma biblioteca nativa.
+**Sirva pelo Windows, não pelo WSL.** O `mangatl serve` roda, mas o IP que ele
+imprime é o endereço interno do WSL (`172.x.x.x`), que o celular não alcança. Como os
+arquivos estão em `/mnt/c`, o `http.server` da stdlib serve do lado do Windows — e ele
+não usa nenhuma biblioteca nativa, então o Smart App Control não o bloqueia:
 
 ```powershell
 python -m http.server 8000 --directory "C:\Users\Perdido\.antigravity\tradução"
 ```
 
+Depois abra `http://<ip-do-pc>:8000/reader/` no celular (`ipconfig` mostra o IP) e use
+"Adicionar à tela de início". O service worker guarda as páginas e as traduções do
+capítulo visitado, então ele reabre sem rede depois da primeira visita.
+
+`mangatl serve` continua útil para testar no próprio PC, em
+`http://localhost:8000/reader/`.
+
 ---
 
 ## Estado atual
 
-Fase 1 completa: extração, tradução pelos dois motores, e leitor com o texto ao lado
-da página.
+Fase 1 completa e verificada em execução: 72 testes passando, extração ponta a ponta
+(detecção → ordem de leitura → OCR → `extract.json`), tradução pelo motor `free`
+gerando `chapter.free.json`, reprocessamento idempotente, e o leitor servindo todos
+os arquivos.
 
-Fase 2 (texto escrito dentro do balão, com inpainting) ainda não foi implementada. A
-fundação está pronta — cada fala traduzida já carrega a `bbox` do balão de origem.
+O motor `claude` tem o formato de request e o parsing cobertos por testes com cliente
+dublê, mas ainda não foi exercitado contra a API real — falta a chave.
+
+Fase 2 parcial: o texto traduzido já é escrito dentro do balão, sobre a tira
+contínua, verificado em execução no capítulo de teste (123 falas posicionadas, 16
+testes de geometria passando). Falta o inpainting — a caixa é branca e retangular,
+e apaga o contorno do balão junto com o texto original.

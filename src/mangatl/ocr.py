@@ -23,7 +23,7 @@ from .models import BBox
 
 _WHITESPACE = re.compile(r"\s+")
 _HYPHEN_BREAK = re.compile(r"(\w)-\s+(\w)")
-_PIPE_AS_I = re.compile(r"(?<=[A-Za-z])\|(?=[A-Za-z])|(?<=\s)\|(?=[A-Za-z])|(?<=[A-Za-z])\|(?=\s)")
+_PIPE_AS_I = re.compile(r"(?<!\|)\|(?!\|)")
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
@@ -83,12 +83,29 @@ def read_block(image: np.ndarray, box: BBox, cfg: OcrConfig) -> tuple[str, float
     return text, confidence
 
 
-def is_usable(text: str, confidence: float, cfg: OcrConfig) -> bool:
-    """Descarta apenas o que e curto E pouco confiavel ao mesmo tempo.
+def _longest_word(text: str) -> int:
+    """Maior sequencia de letras seguidas.
 
-    Texto longo com confianca baixa costuma ser OCR embaralhado de fala real -
-    vale mandar para o motor, que com a imagem em maos consegue corrigir.
+    Contar letras soltas nao separa fala de ruido: "I I" e "r I" tem duas letras
+    cada e nenhuma palavra. Toda fala real tem pelo menos uma palavra, entao medir
+    a maior sequencia rejeita esse tipo de ruido sem poder descartar dialogo.
     """
-    if not text:
+    longest = current = 0
+    for char in text:
+        current = current + 1 if char.isalpha() else 0
+        longest = max(longest, current)
+    return longest
+
+
+def is_usable(text: str, confidence: float, cfg: OcrConfig) -> bool:
+    """Aceita so o que parece fala: confianca minima E letras de verdade.
+
+    A deteccao de balao produz falso-positivo em arte clara - manto branco, fundo
+    palido - e o OCR devolve simbolo solto com confianca baixa. Filtrar aqui, e nao
+    afrouxar a deteccao, e o ponto certo: um balao perdido o motor `claude` recupera
+    sozinho a partir da imagem (com bbox nulo), enquanto um bloco de ruido nao tem
+    como ser desfeito depois - ele custa token e polui a lista de falas.
+    """
+    if confidence < cfg.min_confidence:
         return False
-    return len(text) >= cfg.min_chars or confidence >= cfg.min_confidence
+    return _longest_word(text) >= cfg.min_letters

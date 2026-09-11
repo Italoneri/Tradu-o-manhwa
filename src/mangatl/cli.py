@@ -16,7 +16,8 @@ from dotenv import load_dotenv
 from .config import Config, load_config
 from .engines.base import TranslationError, UnknownEngineError, available_engines, create_engine
 from .pipeline import ChapterNotFoundError, extract_chapter, translate_chapter
-from .store import build_library, discover_chapters, save_library
+from .slicing import is_tall, slice_stream
+from .store import IMAGE_SUFFIXES, build_library, discover_chapters, save_library
 
 app = typer.Typer(add_completion=False, help="Traduz capitulos de manga/mahua EN->PT e serve um leitor web.")
 
@@ -151,6 +152,67 @@ def process_all(
     if failures:
         typer.secho(f"{failures} capitulo(s) falharam", fg=typer.colors.RED)
         raise typer.Exit(code=1)
+
+
+@app.command(name="slice")
+def slice_command(
+    source: str = typer.Argument(..., help="Pasta com as capturas costuradas"),
+    series: str = typer.Argument(..., help="Nome da serie de destino"),
+    chapter: str = typer.Argument(..., help="Nome do capitulo de destino"),
+    pattern: str = typer.Option("*", "--pattern", help="Glob dos arquivos a importar"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Importa capturas de rolagem de uma pasta externa, ja fatiadas em paginas."""
+    _configure_logging(verbose)
+    cfg = _load()
+
+    source_dir = Path(source).expanduser()
+    if not source_dir.is_dir():
+        typer.secho(f"pasta nao encontrada: {source_dir}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    candidates = sorted(
+        path for path in source_dir.glob(pattern)
+        if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
+    )
+    if not candidates:
+        typer.secho(f"nenhuma imagem casou com '{pattern}' em {source_dir}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    import cv2
+
+    tall, short = [], []
+    for path in candidates:
+        image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if image is None:
+            typer.secho(f"pulei {path.name}: nao consegui decodificar", fg=typer.colors.YELLOW)
+            continue
+        height, width = image.shape[:2]
+        (tall if is_tall(width, height, cfg.slicing) else short).append(path)
+
+    # Numa pasta de captura convivem a costura final e os prints brutos que a
+    # geraram. Os prints se sobrepoem entre si, entao importa-los junto duplicaria
+    # falas; quando ha costura, ela e a unica fonte correta.
+    chosen = tall or short
+    if tall and short:
+        typer.secho(f"ignorei {len(short)} imagem(ns) curta(s) - a costura ja as contem", fg=typer.colors.YELLOW)
+    if not tall:
+        typer.secho("nenhuma captura alta; importando as imagens como paginas", fg=typer.colors.YELLOW)
+
+    destination = cfg.library_dir / series / chapter
+    if tall:
+        # Uma chamada so para todas: o macro corta a captura num teto fixo de altura,
+        # e esse corte parte baloes ao meio. Fatiar em fluxo continuo remonta o que
+        # ficou dividido entre dois arquivos.
+        written = len(slice_stream(tall, destination, cfg.slicing))
+    else:
+        destination.mkdir(parents=True, exist_ok=True)
+        for path in chosen:
+            shutil.copy2(path, destination / path.name)
+        written = len(chosen)
+
+    typer.secho(f"{len(chosen)} origem(ns) -> {written} pagina(s) em {destination}", fg=typer.colors.GREEN)
+    typer.echo(f"agora: mangatl process library/{series}/{chapter} --dry-run --debug-boxes")
 
 
 @app.command(name="build-library")

@@ -31,16 +31,16 @@ lang = "eng"
 psm = 6                   # "bloco uniforme de texto" - o recorte ja isolou um balao
 upscale = 3               # Tesseract quer ~30px de altura de caixa alta
 padding = 4
-min_confidence = 45.0
-min_chars = 3
+min_confidence = 45.0     # abaixo disso e ruido de arte, nao fala
+min_letters = 2           # simbolo solto nao e fala
 
 [detect]
 min_area_ratio = 0.002
-max_area_ratio = 0.25
+max_area_ratio = 0.35            # webtoon tem caixa de narracao ocupando a largura toda
 min_aspect = 0.15
 max_aspect = 8.0
 min_fill_ratio = 0.55           # balao e convexo; mancha de arte nao
-min_interior_brightness = 200.0 # balao branco
+min_interior_brightness = 200.0 # brilho do papel, ja descontado o texto
 min_ink_ratio = 0.02            # abaixo disso o balao esta vazio
 max_ink_ratio = 0.40            # acima disso e arte escura, nao texto
 merge_iou = 0.30
@@ -48,3 +48,13 @@ merge_iou = 0.30
 [reading_order]
 rtl = false               # true para manga japones
 band_overlap = 0.40
+
+# Captura de rolagem (webtoon) costurada numa imagem alta e fatiada antes do OCR.
+# O corte procura a linha com menos tinta perto da altura alvo, para nao partir balao.
+[slicing]
+max_height = 1568         # igual a max_image_side: a fatia chega a API sem reducao
+min_height = 400
+tall_ratio = 3.0          # altura/largura acima disso e captura de rolagem
+seam_window = 0.25        # busca a costura em +-25% da altura alvo
+format = "jpeg"           # "png" preserva sem perda, mas pesa ~5x no celular
+quality = 92

@@ -5,8 +5,8 @@
    - library.json e o shell mudam a cada processamento -> rede primeiro, cache como rede de seguranca
 */
 
-const VERSION = "mangatl-v1";
-const SHELL = ["./", "./index.html", "./app.js", "./style.css", "./manifest.webmanifest", "./icon.svg"];
+const VERSION = "mangatl-v2";
+const SHELL = ["./", "./index.html", "./app.js", "./overlay.js", "./style.css", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -44,7 +44,11 @@ async function cacheFirst(request) {
 
 async function networkFirst(request) {
   try {
-    const response = await fetch(request);
+    // no-cache revalida com o servidor em vez de confiar no cache HTTP do browser.
+    // Sem isso o shell atualizado fica preso atras de uma copia velha e so aparece
+    // depois de uma recarga forcada - o cache do service worker nao e o culpado,
+    // o do browser e.
+    const response = await fetch(new Request(request, { cache: "no-cache" }));
     if (response.ok) {
       const cache = await caches.open(VERSION);
       cache.put(request, response.clone());

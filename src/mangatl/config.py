@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -47,12 +48,12 @@ class OcrConfig(Frozen):
     upscale: int = Field(default=3, ge=1, le=8)
     padding: int = Field(default=4, ge=0)
     min_confidence: float = Field(default=45.0, ge=0, le=100)
-    min_chars: int = Field(default=3, ge=1)
+    min_letters: int = Field(default=2, ge=1)
 
 
 class DetectConfig(Frozen):
     min_area_ratio: float = Field(default=0.002, gt=0, lt=1)
-    max_area_ratio: float = Field(default=0.25, gt=0, le=1)
+    max_area_ratio: float = Field(default=0.35, gt=0, le=1)
     min_aspect: float = Field(default=0.15, gt=0)
     max_aspect: float = Field(default=8.0, gt=0)
     min_fill_ratio: float = Field(default=0.55, ge=0, le=1)
@@ -60,6 +61,18 @@ class DetectConfig(Frozen):
     min_ink_ratio: float = Field(default=0.02, ge=0, le=1)
     max_ink_ratio: float = Field(default=0.40, ge=0, le=1)
     merge_iou: float = Field(default=0.30, ge=0, le=1)
+
+
+class SlicingConfig(Frozen):
+    """Fatiamento de captura de rolagem. `max_height` casa com `max_image_side`
+    de proposito: assim a fatia chega a API sem reducao e o texto continua legivel."""
+
+    max_height: int = Field(default=1568, ge=256)
+    min_height: int = Field(default=400, ge=64)
+    tall_ratio: float = Field(default=3.0, gt=1.0)
+    seam_window: float = Field(default=0.25, gt=0, le=0.5)
+    format: Literal["jpeg", "png"] = "jpeg"
+    quality: int = Field(default=92, ge=1, le=100)
 
 
 class ReadingOrderConfig(Frozen):
@@ -74,6 +87,7 @@ class Config(Frozen):
     pricing: dict[str, ModelPricing] = {}
     ocr: OcrConfig = OcrConfig()
     detect: DetectConfig = DetectConfig()
+    slicing: SlicingConfig = SlicingConfig()
     reading_order: ReadingOrderConfig = ReadingOrderConfig()
 
     @property
