@@ -25,6 +25,44 @@ nativas sem reputação. Na prática isso derruba todo wheel Python com extensã
 Rodar dentro do WSL resolve sem desligar o Smart App Control, que é uma mudança
 irreversível no Windows.
 
+## Onde o projeto mora
+
+Existe **uma cópia só** do projeto, no lado Windows:
+
+```
+C:\Users\Perdido\.antigravity\tradução
+```
+
+O WSL enxerga essa mesma pasta em `/mnt/c/Users/Perdido/.antigravity/tradução`.
+Não é cópia nem sincronização — é o mesmo arquivo visto por dois caminhos. Editar
+de um lado aparece no outro na hora.
+
+A divisão de trabalho segue daí:
+
+| Tarefa | Onde rodar |
+| --- | --- |
+| `git`, editor, Explorer | Windows, no caminho `C:\...` |
+| `python`, `pip`, `mangatl`, `tesseract` | WSL, no caminho `/mnt/c/...` |
+
+**Sempre `wsl -d Ubuntu`.** Se a distro padrão desta máquina for a
+`docker-desktop` (é o caso aqui), um `wsl` sem a flag cai nela — e ela não tem
+bash, então qualquer comando morre com
+`execvpe(bash) failed: No such file or directory`. Para rodar algo do pipeline a
+partir do Windows:
+
+```bash
+wsl -d Ubuntu -e bash -lc 'cd "/mnt/c/Users/Perdido/.antigravity/tradução" && source ~/.venvs/mangatl/bin/activate && mangatl doctor'
+```
+
+**Não clone o repositório dentro do home do Linux.** Uma cópia em `~/traducao`
+ou parecido não recebe os commits feitos do lado Windows: ela congela no estado
+do dia em que foi criada e, pior, o checkout Linux grava LF onde o Windows gravou
+CRLF, então `git status` acusa o arquivo inteiro como modificado sem nenhuma
+mudança real de conteúdo. Uma cópia dessas chegou a existir em `~/traducao` nesta
+máquina; se ainda estiver lá, apague com `rm -rf ~/traducao`. O venv em
+`~/.venvs/mangatl` já aponta para o caminho `/mnt/c` em modo editável, que é o
+arranjo correto.
+
 ## Setup
 
 ```bash
