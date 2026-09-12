@@ -140,6 +140,7 @@ class ArgosEngine:
                     bbox=block.bbox,
                     source_text=block.raw_text,
                     text=translated.strip(),
+                    kind=block.kind,
                 )
             )
         return TranslatedPage(

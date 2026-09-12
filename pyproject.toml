@@ -19,6 +19,9 @@ dependencies = [
 
 [project.optional-dependencies]
 free = ["argostranslate>=1.9"]
+# O detector treinado. Instale o torch pelo indice que casa com a sua maquina
+# antes deste extra; o wheel CUDA tem ~2.5GB e nao serve sem GPU NVIDIA recente.
+rtdetr = ["torch>=2.4", "transformers>=4.49"]
 dev = ["pytest>=8.3"]
 
 [project.scripts]

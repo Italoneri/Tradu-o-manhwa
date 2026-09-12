@@ -217,15 +217,53 @@ Este é o passo que decide a qualidade de tudo depois. Antes de gastar API:
 mangatl process library/serie/001 --dry-run --debug-boxes
 ```
 
-Abra os PNGs em `output/serie/001/debug/`. Duas cores, e a diferença entre elas é
+Abra os PNGs em `output/serie/001/debug/`. Três cores, e a diferença entre elas é
 que diz qual botão girar:
 
-- **verde numerado** — virou fala, na ordem de leitura mostrada
+- **verde numerado** — virou fala dentro de balão, na ordem de leitura mostrada
+- **azul numerado** — virou fala sobre a arte (SFX, narração sem moldura, placa)
 - **vermelho** — o detector achou, e o filtro de OCR descartou por não parecer texto
 
-Vermelho não é erro: a detecção de balão é deliberadamente solta, e o OCR é quem
-decide. Muito vermelho só incomoda se estiver custando tempo. Balão *sem caixa
-nenhuma* é o sintoma que importa.
+O número traz a confiança do detector ao lado. Quando a caixa do texto difere a do
+balão, ela aparece fina por dentro — é assim que se vê se o pareamento das duas
+está certo.
+
+Vermelho não é erro: a detecção é deliberadamente solta, e o OCR é quem decide.
+Muito vermelho só incomoda se estiver custando tempo. Balão *sem caixa nenhuma* é o
+sintoma que importa.
+
+### Dois backends
+
+`[detect] backend` escolhe entre eles, e `--detector` sobrescreve sem editar arquivo:
+
+| Backend | O que é | Quando usar |
+|---|---|---|
+| `rtdetr` | RT-DETR-v2 treinado em HQ (`ogkalu/comic-text-and-bubble-detector`) | Padrão. Vê balão colorido, balão sem borda e texto sobre arte |
+| `heuristic` | Visão clássica: região clara, fechada, convexa, com tinta moderada | Sem `torch` instalado, ou para comparar |
+
+```bash
+mangatl process library/serie/001 --dry-run --debug-boxes --detector heuristic
+python scripts/compare_extractions.py <extracao-antiga>.json output/serie/001/extract.json
+```
+
+Calibrar o `rtdetr` são dois números em `[detect.rtdetr]`, e nada mais:
+
+| Sintoma | Ajuste |
+|---|---|
+| Perdeu balões | baixe `confidence` |
+| Ruído de arte virando fala | suba `confidence` |
+| Caixa desenhada em cima do desenho | suba `artwork_confidence` |
+| SFX ou narração sem moldura perdidos | baixe `artwork_confidence` |
+
+`artwork_confidence` é maior que `confidence` de propósito: falso positivo sobre a
+arte desenha caixa em cima do desenho, e isso é pior que perder um balão — balão
+perdido o motor `claude` ainda recupera a partir da imagem.
+
+### Calibrar o backend `heuristic`
+
+A tabela abaixo e os thresholds de `[detect]` valem **só** para este backend. O
+`min_interior_brightness = 200` é o que exige papel branco, e é por isso que balão
+colorido e balão sem borda são invisíveis para ele por construção.
 
 | Sintoma | Ajuste |
 |---|---|

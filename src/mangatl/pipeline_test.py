@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from .models import BBox
+from .models import BBox, Detection
 from .pipeline import _drop_repeated_readings
 
 
 def reading(x: int, y: int, w: int, h: int, text: str, confidence: float = 90.0):
-    return (BBox(x=x, y=y, w=w, h=h), text, confidence)
+    box = BBox(x=x, y=y, w=w, h=h)
+    return (Detection(bbox=box, text_bbox=box), text, confidence)
 
 
 def texts(readings) -> list[str]:
@@ -15,7 +16,7 @@ def texts(readings) -> list[str]:
 
 
 def boxes(readings) -> list[BBox]:
-    return [box for box, _, _ in readings]
+    return [detection.bbox for detection, _, _ in readings]
 
 
 def test_keeps_a_single_reading_untouched():

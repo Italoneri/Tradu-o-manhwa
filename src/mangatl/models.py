@@ -10,10 +10,15 @@ Manter os dois separados e o que permite trocar `--engine` sem rodar OCR de novo
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
-PIPELINE_VERSION = 1
+PIPELINE_VERSION = 2
 """Sobe quando detect/ocr/ordering mudam de forma que invalida extracoes salvas."""
+
+BlockKind = Literal["bubble", "free"]
+"""`free` e texto que nao mora em balao: narracao sem moldura, SFX, placa."""
 
 
 class Frozen(BaseModel):
@@ -61,11 +66,30 @@ class BBox(Frozen):
         return BBox(x=x, y=y, w=max(self.right, other.right) - x, h=max(self.bottom, other.bottom) - y)
 
 
+class Detection(Frozen):
+    """Uma regiao detectada, antes do OCR.
+
+    `bbox` e `text_bbox` sao diferentes de proposito. O detector treinado devolve
+    duas classes que descrevem o mesmo balao: `bubble` e o contorno inteiro e
+    `text_bubble` e so o texto dentro dele. A caixa do texto da o melhor recorte
+    para o OCR; a do balao da o melhor retangulo para escrever a traducao.
+    Guardar so uma das duas obrigaria a escolher entre OCR pior e overlay pior.
+    """
+
+    bbox: BBox
+    text_bbox: BBox
+    kind: BlockKind = "bubble"
+    score: float = Field(default=1.0, ge=0.0, le=1.0)
+    """1.0 na heuristica, que nao tem confianca para reportar."""
+
+
 class ExtractedBlock(Frozen):
     id: str
     bbox: BBox
     raw_text: str
     confidence: float = Field(ge=0.0, le=100.0)
+    kind: BlockKind = "bubble"
+    """Com default para o extract.json da versao 1 ainda validar na comparacao."""
 
 
 class ExtractedPage(Frozen):
@@ -96,6 +120,8 @@ class TranslatedBlock(Frozen):
     """
     source_text: str
     text: str
+    kind: BlockKind = "bubble"
+    """O leitor trata os dois diferente: caixa branca so faz sentido dentro de balao."""
 
 
 class TranslatedPage(Frozen):
