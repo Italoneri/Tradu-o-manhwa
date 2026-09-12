@@ -47,7 +47,7 @@ class OcrConfig(Frozen):
     psm: int = Field(default=6, ge=0, le=13)
     upscale: int = Field(default=3, ge=1, le=8)
     padding: int = Field(default=4, ge=0)
-    min_confidence: float = Field(default=45.0, ge=0, le=100)
+    min_confidence: float = Field(default=40.0, ge=0, le=100)
     min_letters: int = Field(default=2, ge=1)
 
 

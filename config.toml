@@ -31,7 +31,7 @@ lang = "eng"
 psm = 6                   # "bloco uniforme de texto" - o recorte ja isolou um balao
 upscale = 3               # Tesseract quer ~30px de altura de caixa alta
 padding = 4
-min_confidence = 45.0     # abaixo disso e ruido de arte, nao fala
+min_confidence = 40.0     # abaixo disso e ruido de arte, nao fala; ver o porque de 40 no README
 min_letters = 2           # simbolo solto nao e fala
 
 [detect]

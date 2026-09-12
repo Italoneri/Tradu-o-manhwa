@@ -259,6 +259,13 @@ Calibrar o `rtdetr` são dois números em `[detect.rtdetr]`, e nada mais:
 arte desenha caixa em cima do desenho, e isso é pior que perder um balão — balão
 perdido o motor `claude` ainda recupera a partir da imagem.
 
+**`min_confidence` em `[ocr]` acompanha a qualidade da detecção.** Ele era 45,
+calibrado para a heurística solta. Medido no capítulo `manhwa/001` com o `rtdetr`:
+em 45 o filtro descartava três falas corretas — uma delas `"YOU CAN USE INFORMAL
+SPEECH."`, lida inteira, com confiança 40, dentro de um balão que o detector deu
+0.96; em 30 entravam três lixos, inclusive a marca d'água do site. **40** é o ponto
+onde as três voltam sem nenhum ruído junto. Se trocar de detector, meça de novo.
+
 ### Calibrar o backend `heuristic`
 
 A tabela abaixo e os thresholds de `[detect]` valem **só** para este backend. O
