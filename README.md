@@ -300,6 +300,33 @@ blacklistar sempre corromperia números legítimos como `50 YEARS`.
 Não há correção local segura. O motor `claude` resolve porque vê a página e
 reconstrói a fala antes de traduzir; o `free` não tem como perceber.
 
+### Beco sem saída medido: trocar o Tesseract pelo EasyOCR
+
+Parecia o próximo passo óbvio — o EasyOCR é neural, detecta e lê na mesma passada, e
+seria o caminho para os balões que sobram. **Não é.** Medido nas 116 regiões que o
+`rtdetr` acha no capítulo `manhwa/001`, com a saída do EasyOCR normalizada em caixa
+alta (letreiro de HQ é caixa alta; o modelo de inglês dele é treinado em cena natural
+e alterna maiúscula com minúscula, o que sozinho já estragaria a comparação):
+
+| | Tesseract | EasyOCR |
+|---|---|---|
+| letras lidas | **2927** | 2823 |
+| confiança média | **66.3** | 46.4 |
+| regiões que só ele leu | 6, todas ruído de arte | **0** |
+| tempo no capítulo | **28s** | 50s |
+
+**Zero.** O EasyOCR não leu uma única região que o Tesseract tivesse perdido, e custa
+`torchvision` mais onze pacotes.
+
+O engano que levou até aqui vale registrar: um balão de fundo hachurado na `p0058`
+parecia prova de que o Tesseract não dava conta de fundo padronizado. Ele lia
+`"YOU CAN USE INFORMAL SPEECH."` inteiro e sem erro — quem descartava era o
+`min_confidence = 45`. Baixar o limiar para 40 resolveu o caso e removeu o motivo da
+troca junto.
+
+Das 116 regiões, 11 os dois OCRs leem como vazias: são balões sem texto, e o descarte
+está certo.
+
 ---
 
 ## O leitor não mostra as fatias
@@ -371,15 +398,22 @@ capítulo visitado, então ele reabre sem rede depois da primeira visita.
 
 ## Estado atual
 
-Fase 1 completa e verificada em execução: 72 testes passando, extração ponta a ponta
+Fase 1 completa e verificada em execução: 164 testes passando, extração ponta a ponta
 (detecção → ordem de leitura → OCR → `extract.json`), tradução pelo motor `free`
 gerando `chapter.free.json`, reprocessamento idempotente, e o leitor servindo todos
 os arquivos.
+
+A detecção é o `rtdetr` por padrão. Medido no capítulo `manhwa/001` contra a
+heurística: letras de diálogo 2427 → 2774, páginas com diálogo 61 → 71, e nenhuma
+regressão real. Os blocos caem de 123 para 88 porque a heurística picava um balão
+por linha de texto — 19.7 letras por bloco viraram 31.5.
 
 O motor `claude` tem o formato de request e o parsing cobertos por testes com cliente
 dublê, mas ainda não foi exercitado contra a API real — falta a chave.
 
 Fase 2 parcial: o texto traduzido já é escrito dentro do balão, sobre a tira
-contínua, verificado em execução no capítulo de teste (123 falas posicionadas, 16
+contínua, verificado em execução no capítulo de teste (88 falas posicionadas, 16
 testes de geometria passando). Falta o inpainting — a caixa é branca e retangular,
-e apaga o contorno do balão junto com o texto original.
+e apaga o contorno do balão junto com o texto original. O `kind` já chega ao
+`chapter.json` (seis falas marcadas `free` no capítulo de teste), que é o que vai
+permitir parar de pintar caixa branca sobre SFX.
