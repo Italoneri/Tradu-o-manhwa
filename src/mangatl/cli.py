@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import http.server
 import logging
 import shutil
 import socket
-import socketserver
 import subprocess
 from pathlib import Path
 
@@ -16,6 +14,7 @@ from dotenv import load_dotenv
 from .config import Config, load_config
 from .engines.base import TranslationError, UnknownEngineError, available_engines, create_engine
 from .pipeline import ChapterNotFoundError, extract_chapter, translate_chapter
+from .serving import serve_reader
 from .slicing import is_tall, slice_stream
 from .store import IMAGE_SUFFIXES, build_library, discover_chapters, save_library
 
@@ -260,29 +259,19 @@ def _lan_addresses() -> list[str]:
 
 @app.command()
 def serve(port: int = typer.Option(8000, "--port", "-p")) -> None:
-    """Sobe o leitor web servindo a raiz do projeto (imagens + JSONs + PWA)."""
+    """Sobe o leitor web servindo reader/, output/ e library/ (imagens + JSONs + PWA)."""
     cfg = _load()
     save_library(cfg, build_library(cfg))
-
-    handler = type(
-        "RootHandler",
-        (http.server.SimpleHTTPRequestHandler,),
-        {"__init__": lambda self, *a, **kw: http.server.SimpleHTTPRequestHandler.__init__(
-            self, *a, directory=str(cfg.root), **kw
-        )},
-    )
 
     typer.secho(f"leitor:   http://localhost:{port}/reader/", fg=typer.colors.GREEN)
     for address in _lan_addresses():
         typer.echo(f"celular:  http://{address}:{port}/reader/")
     typer.echo("Ctrl+C para parar")
 
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("0.0.0.0", port), handler) as httpd:
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            typer.echo("\nparado")
+    try:
+        serve_reader(cfg.root, port)
+    except KeyboardInterrupt:
+        typer.echo("\nparado")
 
 
 def _check(label: str, ok: bool, hint: str = "") -> bool:

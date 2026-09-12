@@ -302,12 +302,18 @@ node --test reader/overlay.test.js
 
 **Sirva pelo Windows, não pelo WSL.** O `mangatl serve` roda, mas o IP que ele
 imprime é o endereço interno do WSL (`172.x.x.x`), que o celular não alcança. Como os
-arquivos estão em `/mnt/c`, o `http.server` da stdlib serve do lado do Windows — e ele
-não usa nenhuma biblioteca nativa, então o Smart App Control não o bloqueia:
+arquivos estão em `/mnt/c`, o `scripts/serve.py` serve do lado do Windows — e ele é só
+stdlib, então roda no python do sistema, sem o venv, e o Smart App Control não o bloqueia:
 
 ```powershell
-python -m http.server 8000 --directory "C:\Users\Perdido\.antigravity\tradução"
+python scripts\serve.py 8000
 ```
+
+**Não use `python -m http.server --directory <raiz>`.** Ele publica a raiz do projeto
+inteira em `0.0.0.0`, e a raiz contém o `.env` — qualquer um no mesmo Wi-Fi baixa a sua
+chave da Anthropic em `http://<ip-do-pc>:8000/.env`. O `scripts/serve.py` e o
+`mangatl serve` usam o mesmo filtro (`src/mangatl/serving.py`): só `reader/`, `output/`
+e `library/` saem na rede, e a raiz redireciona para `/reader/` em vez de se listar.
 
 Depois abra `http://<ip-do-pc>:8000/reader/` no celular (`ipconfig` mostra o IP) e use
 "Adicionar à tela de início". O service worker guarda as páginas e as traduções do
