@@ -31,10 +31,13 @@ lang = "eng"
 psm = 6                   # "bloco uniforme de texto" - o recorte ja isolou um balao
 upscale = 3               # Tesseract quer ~30px de altura de caixa alta
 padding = 4
-min_confidence = 45.0     # abaixo disso e ruido de arte, nao fala
+min_confidence = 40.0     # abaixo disso e ruido de arte, nao fala; ver o porque de 40 no README
 min_letters = 2           # simbolo solto nao e fala
 
 [detect]
+backend = "rtdetr"               # "heuristic" (visao classica) | "rtdetr" (modelo treinado)
+
+# Os thresholds abaixo sao so do backend "heuristic".
 min_area_ratio = 0.002
 max_area_ratio = 0.35            # webtoon tem caixa de narracao ocupando a largura toda
 min_aspect = 0.15
@@ -44,6 +47,15 @@ min_interior_brightness = 200.0 # brilho do papel, ja descontado o texto
 min_ink_ratio = 0.02            # abaixo disso o balao esta vazio
 max_ink_ratio = 0.40            # acima disso e arte escura, nao texto
 merge_iou = 0.30
+
+# Calibrar o "rtdetr" e outra coisa: so estes dois limiares, nada de forma nem de brilho.
+[detect.rtdetr]
+model_id = "ogkalu/comic-text-and-bubble-detector"
+confidence = 0.35         # abaixo disso o modelo chuta
+artwork_confidence = 0.60 # texto sobre arte: falso positivo aqui desenha caixa em cima do desenho
+device = "auto"           # "auto" | "cpu" | "cuda"
+max_strip_height = 1600   # acima disso a pagina vai ao modelo em faixas
+strip_overlap = 120       # sobreposicao entre faixas, para o balao da costura caber inteiro
 
 [reading_order]
 rtl = false               # true para manga japones

@@ -16,7 +16,10 @@ import cv2
 import numpy as np
 
 from .config import DetectConfig
-from .models import BBox
+from .models import BBox, BlockKind, Detection
+
+Tagged = tuple[BBox, BlockKind]
+"""Caixa com a passada que a produziu, para o kind sobreviver a fusao."""
 
 LIGHT_THRESHOLD = 200
 """Acima disso o pixel conta como interior de balao branco."""
@@ -79,27 +82,32 @@ def _passes_shape_filters(box: BBox, contour_area: float, page_area: int, cfg: D
     return (contour_area / box.area) >= cfg.min_fill_ratio
 
 
-def _merge_overlapping(boxes: list[BBox], merge_iou: float) -> list[BBox]:
+def _merge_overlapping(tagged: list[Tagged], merge_iou: float) -> list[Tagged]:
     """Funde caixas sobrepostas ou aninhadas ate estabilizar.
 
     Um balao com rabo ou com contorno duplo costuma render dois contornos quase
     coincidentes; sem isso o mesmo texto seria OCRado duas vezes.
+
+    Na fusao o `bubble` vence: as duas passadas veem o mesmo balao por angulos
+    diferentes, e a que sabe que ha balao em volta e a que o leitor precisa para
+    decidir se pode pintar caixa.
     """
-    merged = sorted(boxes, key=lambda b: b.area, reverse=True)
+    merged = sorted(tagged, key=lambda item: item[0].area, reverse=True)
     changed = True
     while changed:
         changed = False
-        result: list[BBox] = []
-        for box in merged:
-            for index, kept in enumerate(result):
+        result: list[Tagged] = []
+        for box, kind in merged:
+            for index, (kept, kept_kind) in enumerate(result):
                 intersection = box.intersection_area(kept)
                 contained = intersection >= 0.9 * min(box.area, kept.area)
                 if contained or box.iou(kept) >= merge_iou:
-                    result[index] = kept.merged_with(box)
+                    winner = "bubble" if "bubble" in (kind, kept_kind) else kind
+                    result[index] = (kept.merged_with(box), winner)
                     changed = True
                     break
             else:
-                result.append(box)
+                result.append((box, kind))
         merged = result
     return merged
 
@@ -160,10 +168,13 @@ def _detect_text_blobs(gray: np.ndarray, ink: np.ndarray, cfg: DetectConfig) -> 
     return candidates
 
 
-def detect_bubbles(image: np.ndarray, cfg: DetectConfig) -> list[BBox]:
-    """Caixas dos baloes de `image` (BGR ou grayscale), sem ordem definida.
+def detect_regions(image: np.ndarray, cfg: DetectConfig) -> list[Detection]:
+    """Regioes de texto de `image` (BGR ou grayscale), sem ordem definida.
 
     A ordem de leitura e responsabilidade de `ordering.reading_order`.
+
+    `bbox` e `text_bbox` saem iguais: a heuristica enxerga um retangulo so por
+    regiao, e nao tem como separar o contorno do balao do texto dentro dele.
     """
     gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     _, ink = cv2.threshold(gray, INK_THRESHOLD, 255, cv2.THRESH_BINARY_INV)
@@ -173,30 +184,53 @@ def detect_bubbles(image: np.ndarray, cfg: DetectConfig) -> list[BBox]:
     # rodava em paginas totalmente vazias - bastava um balao para o texto solto
     # da mesma pagina ficar invisivel. O excesso de candidato e barato porque o
     # OCR e quem filtra.
-    boxes = _detect_enclosed_bubbles(gray, ink, cfg) + _detect_text_blobs(gray, ink, cfg)
-    return _merge_overlapping(boxes, cfg.merge_iou)
+    tagged: list[Tagged] = [(box, "bubble") for box in _detect_enclosed_bubbles(gray, ink, cfg)]
+    tagged += [(box, "free") for box in _detect_text_blobs(gray, ink, cfg)]
+
+    return [
+        Detection(bbox=box, text_bbox=box, kind=kind)
+        for box, kind in _merge_overlapping(tagged, cfg.merge_iou)
+    ]
 
 
-KEPT_COLOR = (60, 180, 60)
+def detect_bubbles(image: np.ndarray, cfg: DetectConfig) -> list[BBox]:
+    """So as caixas de `detect_regions`, para quem nao se importa com a classe."""
+    return [detection.bbox for detection in detect_regions(image, cfg)]
+
+
+KIND_COLOR: dict[BlockKind, tuple[int, int, int]] = {"bubble": (60, 180, 60), "free": (220, 140, 40)}
 DROPPED_COLOR = (60, 60, 220)
+TEXT_BBOX_COLOR = (200, 200, 60)
 
 
-def draw_boxes(image: np.ndarray, kept: list[BBox], dropped: list[BBox] = []) -> np.ndarray:
-    """Copia de `image` com as caixas marcadas, para calibrar os thresholds a olho.
+def draw_boxes(image: np.ndarray, kept: list[Detection], dropped: list[BBox] = []) -> np.ndarray:
+    """Copia de `image` com as caixas marcadas, para calibrar a deteccao a olho.
 
-    Verde numerado e o que virou fala; vermelho e o que o detector achou e o filtro
-    de OCR descartou. Separar os dois e o que diz qual ajuste fazer: muito vermelho
-    significa deteccao solta demais, e balao sem caixa nenhuma significa o contrario.
+    Verde numerado e fala dentro de balao; azul numerado e fala sobre a arte, que
+    o leitor nao pode tapar com caixa branca; vermelho e o que o detector achou e
+    o filtro de OCR descartou. Separar os tres e o que diz qual ajuste fazer:
+    muito vermelho significa deteccao solta demais, e balao sem caixa nenhuma
+    significa o contrario.
+
+    Quando a caixa do texto difere a do balao, ela aparece fina por dentro - e o
+    que torna visivel se o pareamento das duas classes esta certo.
     """
     canvas = image.copy() if image.ndim == 3 else cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
 
     for box in dropped:
         cv2.rectangle(canvas, (box.x, box.y), (box.right, box.bottom), DROPPED_COLOR, 2)
 
-    for position, box in enumerate(kept, start=1):
-        cv2.rectangle(canvas, (box.x, box.y), (box.right, box.bottom), KEPT_COLOR, 3)
+    for position, detection in enumerate(kept, start=1):
+        box, color = detection.bbox, KIND_COLOR[detection.kind]
+        cv2.rectangle(canvas, (box.x, box.y), (box.right, box.bottom), color, 3)
+        if detection.text_bbox != box:
+            text_box = detection.text_bbox
+            cv2.rectangle(
+                canvas, (text_box.x, text_box.y), (text_box.right, text_box.bottom),
+                TEXT_BBOX_COLOR, 1,
+            )
         cv2.putText(
-            canvas, str(position), (box.x + 4, box.y + 26),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.9, KEPT_COLOR, 2, cv2.LINE_AA,
+            canvas, f"{position} {detection.score:.2f}", (box.x + 4, box.y + 26),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2, cv2.LINE_AA,
         )
     return canvas

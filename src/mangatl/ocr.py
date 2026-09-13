@@ -100,6 +100,12 @@ def _longest_word(text: str) -> int:
 def is_usable(text: str, confidence: float, cfg: OcrConfig) -> bool:
     """Aceita so o que parece fala: confianca minima E letras de verdade.
 
+    O `min_confidence` acompanha a qualidade da deteccao. Medido no capitulo
+    manhwa/001 com o detector treinado: em 45 o filtro descartava tres falas
+    corretas, entre elas "YOU CAN USE INFORMAL SPEECH." lida inteira com
+    confianca 40; em 30 entravam tres lixos, inclusive a marca d'agua do site.
+    40 e o ponto onde as tres voltam sem nenhum ruido junto.
+
     A deteccao de balao produz falso-positivo em arte clara - manto branco, fundo
     palido - e o OCR devolve simbolo solto com confianca baixa. Filtrar aqui, e nao
     afrouxar a deteccao, e o ponto certo: um balao perdido o motor `claude` recupera

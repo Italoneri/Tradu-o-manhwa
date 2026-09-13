@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import http.server
 import logging
 import shutil
 import socket
-import socketserver
 import subprocess
 from pathlib import Path
 
@@ -14,8 +12,14 @@ import typer
 from dotenv import load_dotenv
 
 from .config import Config, load_config
+from .detectors.base import (
+    DetectorUnavailableError,
+    UnknownDetectorError,
+    available_detectors,
+)
 from .engines.base import TranslationError, UnknownEngineError, available_engines, create_engine
 from .pipeline import ChapterNotFoundError, extract_chapter, translate_chapter
+from .serving import serve_reader
 from .slicing import is_tall, slice_stream
 from .store import IMAGE_SUFFIXES, build_library, discover_chapters, save_library
 
@@ -64,11 +68,14 @@ def _process_one(
     chapter: str,
     *,
     engine_name: str,
+    detector_name: str | None,
     force: bool,
     debug_boxes: bool,
     dry_run: bool,
 ) -> None:
-    report = extract_chapter(cfg, series, chapter, force=force, debug_boxes=debug_boxes)
+    report = extract_chapter(
+        cfg, series, chapter, force=force, debug_boxes=debug_boxes, detector_name=detector_name
+    )
     typer.secho(
         f"{series}/{chapter}: {len(report.extraction.pages)} paginas "
         f"({report.extracted_pages} extraidas, {report.reused_pages} reaproveitadas), "
@@ -93,6 +100,9 @@ def process(
     target: str = typer.Argument(..., help="Pasta do capitulo, ex: library/minha-serie/001"),
     engine: str = typer.Option(None, "--engine", "-e", help=f"Motor de traducao: {', '.join(available_engines())}"),
     model: str = typer.Option(None, "--model", "-m", help="Sobrescreve o modelo do config.toml"),
+    detector: str = typer.Option(
+        None, "--detector", "-d", help=f"Detector de baloes: {', '.join(available_detectors())}"
+    ),
     force: bool = typer.Option(False, "--force", help="Refaz o OCR mesmo em paginas inalteradas"),
     debug_boxes: bool = typer.Option(False, "--debug-boxes", help="Desenha as caixas detectadas em output/.../debug"),
     dry_run: bool = typer.Option(False, "--dry-run", help="So extrai; nao chama motor de traducao"),
@@ -109,9 +119,11 @@ def process(
         _process_one(
             cfg, series, chapter,
             engine_name=engine or cfg.translation.engine,
+            detector_name=detector,
             force=force, debug_boxes=debug_boxes, dry_run=dry_run,
         )
-    except (ChapterNotFoundError, UnknownEngineError, TranslationError) as error:
+    except (ChapterNotFoundError, UnknownEngineError, UnknownDetectorError,
+            DetectorUnavailableError, TranslationError) as error:
         typer.secho(str(error), fg=typer.colors.RED)
         raise typer.Exit(code=1) from error
 
@@ -122,6 +134,7 @@ def process(
 def process_all(
     series: str = typer.Argument(None, help="Nome da serie; vazio processa a biblioteca inteira"),
     engine: str = typer.Option(None, "--engine", "-e"),
+    detector: str = typer.Option(None, "--detector", "-d"),
     force: bool = typer.Option(False, "--force"),
     debug_boxes: bool = typer.Option(False, "--debug-boxes"),
     dry_run: bool = typer.Option(False, "--dry-run"),
@@ -142,9 +155,11 @@ def process_all(
         try:
             _process_one(
                 cfg, chapter_series, chapter,
-                engine_name=engine_name, force=force, debug_boxes=debug_boxes, dry_run=dry_run,
+                engine_name=engine_name, detector_name=detector,
+                force=force, debug_boxes=debug_boxes, dry_run=dry_run,
             )
-        except (ChapterNotFoundError, UnknownEngineError, TranslationError) as error:
+        except (ChapterNotFoundError, UnknownEngineError, UnknownDetectorError,
+            DetectorUnavailableError, TranslationError) as error:
             failures += 1
             typer.secho(f"{chapter_series}/{chapter}: {error}", fg=typer.colors.RED)
 
@@ -260,29 +275,19 @@ def _lan_addresses() -> list[str]:
 
 @app.command()
 def serve(port: int = typer.Option(8000, "--port", "-p")) -> None:
-    """Sobe o leitor web servindo a raiz do projeto (imagens + JSONs + PWA)."""
+    """Sobe o leitor web servindo reader/, output/ e library/ (imagens + JSONs + PWA)."""
     cfg = _load()
     save_library(cfg, build_library(cfg))
-
-    handler = type(
-        "RootHandler",
-        (http.server.SimpleHTTPRequestHandler,),
-        {"__init__": lambda self, *a, **kw: http.server.SimpleHTTPRequestHandler.__init__(
-            self, *a, directory=str(cfg.root), **kw
-        )},
-    )
 
     typer.secho(f"leitor:   http://localhost:{port}/reader/", fg=typer.colors.GREEN)
     for address in _lan_addresses():
         typer.echo(f"celular:  http://{address}:{port}/reader/")
     typer.echo("Ctrl+C para parar")
 
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("0.0.0.0", port), handler) as httpd:
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            typer.echo("\nparado")
+    try:
+        serve_reader(cfg.root, port)
+    except KeyboardInterrupt:
+        typer.echo("\nparado")
 
 
 def _check(label: str, ok: bool, hint: str = "") -> bool:
@@ -291,6 +296,45 @@ def _check(label: str, ok: bool, hint: str = "") -> bool:
     if not ok and hint:
         typer.echo(f"      {hint}")
     return ok
+
+
+def _installed(module: str) -> bool:
+    try:
+        __import__(module)
+    except ImportError:
+        return False
+    return True
+
+
+def _report_detector(cfg: Config) -> None:
+    """Estado do backend de deteccao configurado.
+
+    Fora da lista de checks obrigatorios: quem usa o backend `heuristic` nao
+    precisa de torch, e reprovar o doctor por isso seria mentira.
+    """
+    typer.echo(f"detector: {cfg.detect.backend}")
+    if cfg.detect.backend != "rtdetr":
+        return
+
+    # Lista, nao gerador: o doctor existe para listar tudo que falta de uma vez,
+    # e o short-circuit do all() esconderia o segundo pacote ausente.
+    ready = [
+        _check(f"pacote {module}", _installed(module), "pip install -e '.[rtdetr]'")
+        for module in ("torch", "transformers")
+    ]
+    if not all(ready):
+        return
+
+    from huggingface_hub import try_to_load_from_cache
+
+    from .detectors.rtdetr import _resolve_device
+
+    typer.echo(f"      device: {_resolve_device(cfg.detect.rtdetr.device)}")
+    _check(
+        f"modelo {cfg.detect.rtdetr.model_id} em cache",
+        isinstance(try_to_load_from_cache(cfg.detect.rtdetr.model_id, "config.json"), str),
+        "baixa sozinho na primeira extracao (~200MB)",
+    )
 
 
 @app.command()
@@ -340,6 +384,9 @@ def doctor() -> None:
         bool(os.environ.get("ANTHROPIC_API_KEY")),
         "copie .env.example para .env e preencha a chave",
     )
+
+    typer.echo("")
+    _report_detector(cfg)
 
     try:
         from .engines.argos import language_package_installed

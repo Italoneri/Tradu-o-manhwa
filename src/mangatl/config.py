@@ -47,11 +47,24 @@ class OcrConfig(Frozen):
     psm: int = Field(default=6, ge=0, le=13)
     upscale: int = Field(default=3, ge=1, le=8)
     padding: int = Field(default=4, ge=0)
-    min_confidence: float = Field(default=45.0, ge=0, le=100)
+    min_confidence: float = Field(default=40.0, ge=0, le=100)
     min_letters: int = Field(default=2, ge=1)
 
 
+class RtdetrConfig(Frozen):
+    model_id: str = "ogkalu/comic-text-and-bubble-detector"
+    confidence: float = Field(default=0.35, gt=0, lt=1)
+    artwork_confidence: float = Field(default=0.60, gt=0, lt=1)
+    """Maior que `confidence` de proposito: ver a justificativa em detectors/rtdetr.py."""
+    device: Literal["auto", "cpu", "cuda"] = "auto"
+    max_strip_height: int = Field(default=1600, ge=256)
+    strip_overlap: int = Field(default=120, ge=0)
+
+
 class DetectConfig(Frozen):
+    backend: Literal["heuristic", "rtdetr"] = "heuristic"
+    """Default no backend antigo: quem nao editou o config.toml nao muda de comportamento."""
+    rtdetr: RtdetrConfig = RtdetrConfig()
     min_area_ratio: float = Field(default=0.002, gt=0, lt=1)
     max_area_ratio: float = Field(default=0.35, gt=0, le=1)
     min_aspect: float = Field(default=0.15, gt=0)

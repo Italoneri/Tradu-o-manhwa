@@ -25,6 +25,44 @@ nativas sem reputação. Na prática isso derruba todo wheel Python com extensã
 Rodar dentro do WSL resolve sem desligar o Smart App Control, que é uma mudança
 irreversível no Windows.
 
+## Onde o projeto mora
+
+Existe **uma cópia só** do projeto, no lado Windows:
+
+```
+C:\Users\Perdido\.antigravity\tradução
+```
+
+O WSL enxerga essa mesma pasta em `/mnt/c/Users/Perdido/.antigravity/tradução`.
+Não é cópia nem sincronização — é o mesmo arquivo visto por dois caminhos. Editar
+de um lado aparece no outro na hora.
+
+A divisão de trabalho segue daí:
+
+| Tarefa | Onde rodar |
+| --- | --- |
+| `git`, editor, Explorer | Windows, no caminho `C:\...` |
+| `python`, `pip`, `mangatl`, `tesseract` | WSL, no caminho `/mnt/c/...` |
+
+**Sempre `wsl -d Ubuntu`.** Se a distro padrão desta máquina for a
+`docker-desktop` (é o caso aqui), um `wsl` sem a flag cai nela — e ela não tem
+bash, então qualquer comando morre com
+`execvpe(bash) failed: No such file or directory`. Para rodar algo do pipeline a
+partir do Windows:
+
+```bash
+wsl -d Ubuntu -e bash -lc 'cd "/mnt/c/Users/Perdido/.antigravity/tradução" && source ~/.venvs/mangatl/bin/activate && mangatl doctor'
+```
+
+**Não clone o repositório dentro do home do Linux.** Uma cópia em `~/traducao`
+ou parecido não recebe os commits feitos do lado Windows: ela congela no estado
+do dia em que foi criada e, pior, o checkout Linux grava LF onde o Windows gravou
+CRLF, então `git status` acusa o arquivo inteiro como modificado sem nenhuma
+mudança real de conteúdo. Uma cópia dessas chegou a existir em `~/traducao` nesta
+máquina; se ainda estiver lá, apague com `rm -rf ~/traducao`. O venv em
+`~/.venvs/mangatl` já aponta para o caminho `/mnt/c` em modo editável, que é o
+arranjo correto.
+
 ## Setup
 
 ```bash
@@ -179,15 +217,60 @@ Este é o passo que decide a qualidade de tudo depois. Antes de gastar API:
 mangatl process library/serie/001 --dry-run --debug-boxes
 ```
 
-Abra os PNGs em `output/serie/001/debug/`. Duas cores, e a diferença entre elas é
+Abra os PNGs em `output/serie/001/debug/`. Três cores, e a diferença entre elas é
 que diz qual botão girar:
 
-- **verde numerado** — virou fala, na ordem de leitura mostrada
+- **verde numerado** — virou fala dentro de balão, na ordem de leitura mostrada
+- **azul numerado** — virou fala sobre a arte (SFX, narração sem moldura, placa)
 - **vermelho** — o detector achou, e o filtro de OCR descartou por não parecer texto
 
-Vermelho não é erro: a detecção de balão é deliberadamente solta, e o OCR é quem
-decide. Muito vermelho só incomoda se estiver custando tempo. Balão *sem caixa
-nenhuma* é o sintoma que importa.
+O número traz a confiança do detector ao lado. Quando a caixa do texto difere a do
+balão, ela aparece fina por dentro — é assim que se vê se o pareamento das duas
+está certo.
+
+Vermelho não é erro: a detecção é deliberadamente solta, e o OCR é quem decide.
+Muito vermelho só incomoda se estiver custando tempo. Balão *sem caixa nenhuma* é o
+sintoma que importa.
+
+### Dois backends
+
+`[detect] backend` escolhe entre eles, e `--detector` sobrescreve sem editar arquivo:
+
+| Backend | O que é | Quando usar |
+|---|---|---|
+| `rtdetr` | RT-DETR-v2 treinado em HQ (`ogkalu/comic-text-and-bubble-detector`) | Padrão. Vê balão colorido, balão sem borda e texto sobre arte |
+| `heuristic` | Visão clássica: região clara, fechada, convexa, com tinta moderada | Sem `torch` instalado, ou para comparar |
+
+```bash
+mangatl process library/serie/001 --dry-run --debug-boxes --detector heuristic
+python scripts/compare_extractions.py <extracao-antiga>.json output/serie/001/extract.json
+```
+
+Calibrar o `rtdetr` são dois números em `[detect.rtdetr]`, e nada mais:
+
+| Sintoma | Ajuste |
+|---|---|
+| Perdeu balões | baixe `confidence` |
+| Ruído de arte virando fala | suba `confidence` |
+| Caixa desenhada em cima do desenho | suba `artwork_confidence` |
+| SFX ou narração sem moldura perdidos | baixe `artwork_confidence` |
+
+`artwork_confidence` é maior que `confidence` de propósito: falso positivo sobre a
+arte desenha caixa em cima do desenho, e isso é pior que perder um balão — balão
+perdido o motor `claude` ainda recupera a partir da imagem.
+
+**`min_confidence` em `[ocr]` acompanha a qualidade da detecção.** Ele era 45,
+calibrado para a heurística solta. Medido no capítulo `manhwa/001` com o `rtdetr`:
+em 45 o filtro descartava três falas corretas — uma delas `"YOU CAN USE INFORMAL
+SPEECH."`, lida inteira, com confiança 40, dentro de um balão que o detector deu
+0.96; em 30 entravam três lixos, inclusive a marca d'água do site. **40** é o ponto
+onde as três voltam sem nenhum ruído junto. Se trocar de detector, meça de novo.
+
+### Calibrar o backend `heuristic`
+
+A tabela abaixo e os thresholds de `[detect]` valem **só** para este backend. O
+`min_interior_brightness = 200` é o que exige papel branco, e é por isso que balão
+colorido e balão sem borda são invisíveis para ele por construção.
 
 | Sintoma | Ajuste |
 |---|---|
@@ -216,6 +299,33 @@ blacklistar sempre corromperia números legítimos como `50 YEARS`.
 
 Não há correção local segura. O motor `claude` resolve porque vê a página e
 reconstrói a fala antes de traduzir; o `free` não tem como perceber.
+
+### Beco sem saída medido: trocar o Tesseract pelo EasyOCR
+
+Parecia o próximo passo óbvio — o EasyOCR é neural, detecta e lê na mesma passada, e
+seria o caminho para os balões que sobram. **Não é.** Medido nas 116 regiões que o
+`rtdetr` acha no capítulo `manhwa/001`, com a saída do EasyOCR normalizada em caixa
+alta (letreiro de HQ é caixa alta; o modelo de inglês dele é treinado em cena natural
+e alterna maiúscula com minúscula, o que sozinho já estragaria a comparação):
+
+| | Tesseract | EasyOCR |
+|---|---|---|
+| letras lidas | **2927** | 2823 |
+| confiança média | **66.3** | 46.4 |
+| regiões que só ele leu | 6, todas ruído de arte | **0** |
+| tempo no capítulo | **28s** | 50s |
+
+**Zero.** O EasyOCR não leu uma única região que o Tesseract tivesse perdido, e custa
+`torchvision` mais onze pacotes.
+
+O engano que levou até aqui vale registrar: um balão de fundo hachurado na `p0058`
+parecia prova de que o Tesseract não dava conta de fundo padronizado. Ele lia
+`"YOU CAN USE INFORMAL SPEECH."` inteiro e sem erro — quem descartava era o
+`min_confidence = 45`. Baixar o limiar para 40 resolveu o caso e removeu o motivo da
+troca junto.
+
+Das 116 regiões, 11 os dois OCRs leem como vazias: são balões sem texto, e o descarte
+está certo.
 
 ---
 
@@ -264,12 +374,18 @@ node --test reader/overlay.test.js
 
 **Sirva pelo Windows, não pelo WSL.** O `mangatl serve` roda, mas o IP que ele
 imprime é o endereço interno do WSL (`172.x.x.x`), que o celular não alcança. Como os
-arquivos estão em `/mnt/c`, o `http.server` da stdlib serve do lado do Windows — e ele
-não usa nenhuma biblioteca nativa, então o Smart App Control não o bloqueia:
+arquivos estão em `/mnt/c`, o `scripts/serve.py` serve do lado do Windows — e ele é só
+stdlib, então roda no python do sistema, sem o venv, e o Smart App Control não o bloqueia:
 
 ```powershell
-python -m http.server 8000 --directory "C:\Users\Perdido\.antigravity\tradução"
+python scripts\serve.py 8000
 ```
+
+**Não use `python -m http.server --directory <raiz>`.** Ele publica a raiz do projeto
+inteira em `0.0.0.0`, e a raiz contém o `.env` — qualquer um no mesmo Wi-Fi baixa a sua
+chave da Anthropic em `http://<ip-do-pc>:8000/.env`. O `scripts/serve.py` e o
+`mangatl serve` usam o mesmo filtro (`src/mangatl/serving.py`): só `reader/`, `output/`
+e `library/` saem na rede, e a raiz redireciona para `/reader/` em vez de se listar.
 
 Depois abra `http://<ip-do-pc>:8000/reader/` no celular (`ipconfig` mostra o IP) e use
 "Adicionar à tela de início". O service worker guarda as páginas e as traduções do
@@ -282,15 +398,22 @@ capítulo visitado, então ele reabre sem rede depois da primeira visita.
 
 ## Estado atual
 
-Fase 1 completa e verificada em execução: 72 testes passando, extração ponta a ponta
+Fase 1 completa e verificada em execução: 164 testes passando, extração ponta a ponta
 (detecção → ordem de leitura → OCR → `extract.json`), tradução pelo motor `free`
 gerando `chapter.free.json`, reprocessamento idempotente, e o leitor servindo todos
 os arquivos.
+
+A detecção é o `rtdetr` por padrão. Medido no capítulo `manhwa/001` contra a
+heurística: letras de diálogo 2427 → 2774, páginas com diálogo 61 → 71, e nenhuma
+regressão real. Os blocos caem de 123 para 88 porque a heurística picava um balão
+por linha de texto — 19.7 letras por bloco viraram 31.5.
 
 O motor `claude` tem o formato de request e o parsing cobertos por testes com cliente
 dublê, mas ainda não foi exercitado contra a API real — falta a chave.
 
 Fase 2 parcial: o texto traduzido já é escrito dentro do balão, sobre a tira
-contínua, verificado em execução no capítulo de teste (123 falas posicionadas, 16
+contínua, verificado em execução no capítulo de teste (88 falas posicionadas, 16
 testes de geometria passando). Falta o inpainting — a caixa é branca e retangular,
-e apaga o contorno do balão junto com o texto original.
+e apaga o contorno do balão junto com o texto original. O `kind` já chega ao
+`chapter.json` (seis falas marcadas `free` no capítulo de teste), que é o que vai
+permitir parar de pintar caixa branca sobre SFX.

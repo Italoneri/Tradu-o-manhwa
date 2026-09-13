@@ -21,7 +21,7 @@ import cv2
 from pydantic import BaseModel, ConfigDict
 
 from ..config import Config
-from ..models import BBox, ExtractedPage, TranslatedBlock, TranslatedPage
+from ..models import ExtractedPage, TranslatedBlock, TranslatedPage
 from .base import TranslationError
 
 log = logging.getLogger("mangatl.claude")
@@ -241,13 +241,17 @@ class ClaudeEngine:
         )
 
     def _assemble(self, page: ExtractedPage, lines: Sequence[TranslatedLine]) -> TranslatedPage:
-        boxes: dict[str, BBox] = {block.id: block.bbox for block in page.blocks}
+        detected = {block.id: block for block in page.blocks}
         blocks = [
             TranslatedBlock(
                 id=line.block_id or f"p{page.index:03d}-new{position:02d}",
-                bbox=boxes.get(line.block_id) if line.block_id else None,
+                bbox=detected[line.block_id].bbox if line.block_id in detected else None,
                 source_text=line.source_text,
                 text=line.translation,
+                # Fala que o detector perdeu chega sem bbox e sem classe; `bubble`
+                # e o palpite seguro, porque e o unico caso em que o leitor pode
+                # pintar caixa - e sem bbox ele nao pinta nada mesmo.
+                kind=detected[line.block_id].kind if line.block_id in detected else "bubble",
             )
             for position, line in enumerate(lines, start=1)
             if line.translation.strip()
