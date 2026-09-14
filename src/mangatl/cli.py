@@ -18,8 +18,8 @@ from .detectors.base import (
     available_detectors,
 )
 from .engines.base import TranslationError, UnknownEngineError, available_engines, create_engine
+from .panel import serve_panel
 from .pipeline import ChapterNotFoundError, extract_chapter, translate_chapter
-from .serving import serve_reader
 from .slicing import is_tall, slice_stream
 from .store import IMAGE_SUFFIXES, build_library, discover_chapters, save_library
 
@@ -285,7 +285,7 @@ def serve(port: int = typer.Option(8000, "--port", "-p")) -> None:
     typer.echo("Ctrl+C para parar")
 
     try:
-        serve_reader(cfg.root, port)
+        serve_panel(cfg, port)
     except KeyboardInterrupt:
         typer.echo("\nparado")
 
