@@ -269,7 +269,9 @@ function bubbleHtml(block, page) {
     `left:${round(rect.left)}%;top:${round(rect.top)}%;width:${round(rect.width)}%` +
     `;--h:${round(rect.height)}%;--limit:${round(rect.limit)}%;--min-w:${round(rect.minWidth)}%`;
 
-  return `<span class="bubble" style="${box};--size:${round(size)}" title="${escapeHtml(block.source_text)}"
+  // `data-size` guarda o tamanho pedido e `--size` o que foi aplicado. Sem separar
+  // os dois, refazer o ajuste partiria do valor ja encolhido e so encolheria mais.
+  return `<span class="bubble" style="${box};--size:${round(size)}" data-size="${round(size)}" title="${escapeHtml(block.source_text)}"
       ><span class="t">${escapeHtml(block.text)}</span></span>`;
 }
 
@@ -330,7 +332,17 @@ function orphansHtml(pages) {
 
 /* O ajuste de fonte le o layout ja pintado, entao acontece por fatia, quando ela
    chega perto da tela. Medir as 155 na abertura travaria o capitulo. */
+let fitObserver = null;
+
+/** Reajusta a fonte de cada fatia quando ela chega perto da tela.
+ *
+ * Chamavel de novo: `fitSlice` parte sempre do `data-size`, entao rodar duas vezes
+ * da o mesmo resultado. E o que permite refazer a conta quando o overlay volta a
+ * aparecer - escondido, a caixa mede zero, nada transborda, e a fala ficaria no
+ * tamanho pedido mesmo sem caber.
+ */
 function fitOnScroll() {
+  fitObserver?.disconnect();
   const observer = new IntersectionObserver(
     (entries) => {
       for (const entry of entries) {
@@ -342,13 +354,14 @@ function fitOnScroll() {
     { rootMargin: "400px 0px" },
   );
 
+  fitObserver = observer;
   for (const slice of document.querySelectorAll(".slice")) observer.observe(slice);
 }
 
 function fitSlice(slice) {
   for (const bubble of slice.querySelectorAll(".bubble")) {
     const inner = bubble.firstElementChild;
-    const start = Number(bubble.style.getPropertyValue("--size"));
+    const start = Number(bubble.dataset.size);
     // `--limit` e a altura do balao, e nao a da caixa branca: a fala pode ocupar o
     // balao inteiro antes de passar dele. Vem da fatia e nao de `getComputedStyle`,
     // que devolveria a porcentagem ainda em `%`.
@@ -501,6 +514,9 @@ function setupOverlayToggle() {
     document.body.classList.toggle("hide-overlay", !next);
     el.toggleOverlay.setAttribute("aria-pressed", String(next));
     store.set("mangatl.overlay", next);
+    // Escondida, a caixa mede zero e o ajuste de fonte nao teve o que medir.
+    // Quem le com a traducao desligada e liga no meio veria tudo sem caber.
+    if (next) fitOnScroll();
   };
 }
 

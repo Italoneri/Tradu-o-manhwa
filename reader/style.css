@@ -354,6 +354,14 @@ main { padding: var(--space-8) var(--space-8) 64px; max-width: 1180px; margin: 0
   border-radius: 0.7em;
   padding: 0.15em 0.5em;
   hyphens: auto;
+  /* Hifenizar so palavra longa. `hyphens: auto` sozinho parte "ESTAVA" em
+     "ES-TAVA", e num balao estreito a fala vira uma coluna de duas silabas por
+     linha. Travando a palavra curta, quem nao cabe mais transborda em altura e o
+     `fitFontSize` encolhe a fonte - que e o dano menor. Medido nas 88 falas de
+     output/manhwa/001: hifenizadas caem de 7 para 3, nenhum estouro novo e o
+     corpo medio vai de 4.53 para 4.52cqw. As 3 que sobram sao palavra longa de
+     verdade, que precisa partir mesmo. */
+  hyphenate-limit-chars: 8 4 4;
   overflow-wrap: break-word;
 }
 

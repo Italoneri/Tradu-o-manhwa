@@ -1,8 +1,17 @@
 /* Cache do leitor: o celular precisa reabrir um capitulo ja visitado sem rede.
 
    Duas politicas, porque os arquivos tem naturezas diferentes:
-   - pagina e traducao de capitulo nunca mudam depois de geradas -> cache primeiro
-   - library.json e o shell mudam a cada processamento -> rede primeiro, cache como rede de seguranca
+   - imagem de pagina nao muda de conteudo sob o mesmo nome -> cache primeiro
+   - todo o resto muda quando o capitulo e reprocessado -> rede primeiro, cache
+     como rede de seguranca
+
+   O `chapter.*.json` estava do lado errado dessa divisao. A premissa era que uma
+   traducao nao muda depois de gerada, e ela e falsa: `--force`, troca de motor e
+   PIPELINE_VERSION novo reescrevem o arquivo sob o mesmo nome, e o leitor que ja
+   tinha aberto o capitulo continuava mostrando a traducao antiga para sempre.
+   Rede primeiro custa uma revalidacao de ~50KB por abertura e, offline, cai no
+   cache exatamente como antes - o ganho de ler sem rede esta nas imagens, que
+   sao o volume.
 */
 
 const VERSION = "mangatl-v3";
@@ -27,7 +36,9 @@ self.addEventListener("activate", (event) => {
 });
 
 function isImmutable(url) {
-  return /\/chapter\.[^/]+\.json$/.test(url.pathname) || /\.(jpe?g|png|webp|bmp)$/i.test(url.pathname);
+  // Trocar a arte de uma pagina sem trocar o nome do arquivo e o unico jeito de
+  // furar isto; nesse caso subir o VERSION acima e a saida.
+  return /\.(jpe?g|png|webp|bmp)$/i.test(url.pathname);
 }
 
 async function cacheFirst(request) {
