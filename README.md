@@ -159,6 +159,29 @@ poucos pixels põe tinta em toda linha da página e apagaria as calhas entre pai
 Se você já tem as imagens dentro de `library/`, o `process` fatia sozinho e guarda os
 originais em `library/<serie>/<cap>/_source/`. Rodar de novo não refatia nada.
 
+### Quando a origem já cortou a fala
+
+Nada disso vale se as páginas chegam já fatiadas do site — aí quem escolheu onde
+cortar não foi este projeto, e a escolha pode ter caído no meio de uma fala. O
+detector roda por página e nunca vê as duas metades juntas: medido na emenda entre
+`p0001` e `p0002` de um capítulo real, ele não acha nada acima do corte e lê
+`"my Collen Eyes activated..."` abaixo dele — metade da frase, com a outra metade
+visível na arte, em inglês, do lado de fora da caixa branca.
+
+O `process` faz uma segunda passada nas emendas: monta uma faixa com o pé de uma
+página e a cabeça da seguinte, e detecta ali. Na mesma emenda a leitura passa a ser
+`"Just in case, I kept my Golden Eyes activated..."`, e o bloco fica registrado na
+página onde começa, com `overflow_bottom` dizendo quanto dele segue na próxima — o
+leitor estica a caixa branca através da emenda.
+
+A passada não é gratuita, então ela só roda onde há sinal de corte: algum bloco
+encostado na borda compartilhada. Medido no mesmo capítulo, 26 das 154 emendas.
+
+A faixa nem sempre lê melhor, e por isso a costura só é aceita quando o texto dela
+não é mais curto que o das metades que ela substituiria. Sem essa trava, uma emenda
+medida trocava a frase inteira que a página já tinha lido por um trecho dela.
+`seam_band` em `[detect]` controla a fração de cada página que entra na faixa.
+
 ---
 
 ## Uso

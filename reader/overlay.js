@@ -125,7 +125,7 @@ export function grownBBox(bbox, fraction = TEXT_MARGIN) {
   return { x, y, w: bbox.w + (bbox.x - x) + margin, h: bbox.h + (bbox.y - y) + margin };
 }
 
-/** Onde pintar a traducao, a partir das duas caixas que o pipeline mede.
+/** Onde pintar a traducao, a partir das medidas que o pipeline guardou no bloco.
  *
  * Os eixos vem de medidas diferentes porque erram de formas diferentes. Medido nas
  * 88 falas de output/manhwa/001: na horizontal o texto original esta centrado no
@@ -139,20 +139,27 @@ export function grownBBox(bbox, fraction = TEXT_MARGIN) {
  *
  * `minWidth` cobre o texto original inteiro. Sem ele uma traducao mais curta que o
  * ingles deixaria o resto da fala original aparecendo em volta do branco.
+ *
+ * `overflow_bottom` e a fala que a emenda entre paginas cortou: ela comeca nesta
+ * fatia e continua na seguinte. A tira nao recorta a fatia, entao somar o
+ * transbordo a altura e o bastante para a caixa atravessar a emenda.
  */
-export function overlayBox(bbox, textBBox, page) {
-  const bubble = bubbleRect(bbox, page);
-  if (!textBBox) {
-    return { ...bubble, limit: bubble.height, minWidth: 0 };
+export function overlayBox(block, page) {
+  const bubble = bubbleRect(block.bbox, page);
+  const overflow = percent(block.overflow_bottom ?? 0, page.height);
+  const limit = bubble.height + overflow;
+
+  if (!block.text_bbox) {
+    return { ...bubble, height: limit, limit, minWidth: 0 };
   }
 
-  const text = bubbleRect(grownBBox(textBBox), page);
+  const text = bubbleRect(grownBBox(block.text_bbox), page);
   return {
     left: bubble.left,
     top: text.top,
     width: bubble.width,
     height: text.height,
-    limit: bubble.height,
+    limit,
     minWidth: bubble.width === 0 ? 0 : clamp(percent(text.width, bubble.width), 0, 100),
   };
 }

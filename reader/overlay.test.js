@@ -176,16 +176,17 @@ describe("grownBBox", () => {
 
 describe("overlayBox", () => {
   const bbox = { x: 100, y: 200, w: 300, h: 120 };
+  const text_bbox = { x: 160, y: 230, w: 180, h: 60 };
 
   it("cai no balao inteiro sem caixa de texto", () => {
-    const box = overlayBox(bbox, null, page);
+    const box = overlayBox({ bbox }, page);
     assert.deepEqual(box, { left: 10, top: 10, width: 30, height: 6, limit: 6, minWidth: 0 });
   });
 
   it("toma a largura do balao e a faixa vertical do texto", () => {
     // O texto medido ocupa 180x60 a partir de (160, 230); com a folga de 2.5% da
     // largura ele vira 190x70 a partir de (155, 225).
-    const box = overlayBox(bbox, { x: 160, y: 230, w: 180, h: 60 }, page);
+    const box = overlayBox({ bbox, text_bbox }, page);
 
     assert.equal(box.left, 10, "a esquerda continua a do balao");
     assert.equal(box.width, 30, "a largura continua a do balao");
@@ -194,22 +195,36 @@ describe("overlayBox", () => {
   });
 
   it("mede o crescimento contra o balao, nao contra a faixa de texto", () => {
-    const box = overlayBox(bbox, { x: 160, y: 230, w: 180, h: 60 }, page);
-    assert.equal(box.limit, 6);
+    assert.equal(overlayBox({ bbox, text_bbox }, page).limit, 6);
   });
 
   it("exige do branco a largura do texto original", () => {
     // 190 de 300 da 63.3%: e o quanto do balao o ingles ocupava, e o branco nao
     // pode encolher mais que isso sem deixar a fala original aparecendo.
-    const box = overlayBox(bbox, { x: 160, y: 230, w: 180, h: 60 }, page);
-    assert.equal(box.minWidth, (190 * 100) / 300);
+    assert.equal(overlayBox({ bbox, text_bbox }, page).minWidth, (190 * 100) / 300);
   });
 
   it("nao pede branco mais largo que o balao", () => {
     // Texto medido mais largo que o proprio balao acontece quando a deteccao
     // aperta a bbox; 100% e o maximo que o filho pode ocupar da ancora.
-    const box = overlayBox(bbox, { x: 100, y: 230, w: 400, h: 60 }, page);
-    assert.equal(box.minWidth, 100);
+    const wide = { bbox, text_bbox: { x: 100, y: 230, w: 400, h: 60 } };
+    assert.equal(overlayBox(wide, page).minWidth, 100);
+  });
+
+  it("atravessa a emenda quando a fala continua na fatia seguinte", () => {
+    // A fala comeca em y=1900 de uma pagina de 2000 e sobra 300px na seguinte: a
+    // caixa mede os 100px que cabem mais os 300 que passam, em porcentagem desta
+    // pagina.
+    const cut = { bbox: { x: 100, y: 1900, w: 300, h: 100 }, overflow_bottom: 300 };
+    const box = overlayBox(cut, page);
+
+    assert.equal(box.top, 95);
+    assert.equal(box.height, 20, "5% que cabem mais 15% que passam");
+    assert.equal(box.limit, 20, "a fonte pode crescer nos dois pedacos");
+  });
+
+  it("nao muda nada quando a fala nao foi cortada", () => {
+    assert.deepEqual(overlayBox({ bbox, overflow_bottom: 0 }, page), overlayBox({ bbox }, page));
   });
 });
 

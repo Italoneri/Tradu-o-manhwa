@@ -256,6 +256,9 @@ class ClaudeEngine:
                 source_font_px=(
                     detected[line.block_id].source_font_px if line.block_id in detected else None
                 ),
+                overflow_bottom=(
+                    detected[line.block_id].overflow_bottom if line.block_id in detected else 0
+                ),
             )
             for position, line in enumerate(lines, start=1)
             if line.translation.strip()

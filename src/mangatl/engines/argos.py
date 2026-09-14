@@ -143,6 +143,7 @@ class ArgosEngine:
                     kind=block.kind,
                     text_bbox=block.text_bbox,
                     source_font_px=block.source_font_px,
+                    overflow_bottom=block.overflow_bottom,
                 )
             )
         return TranslatedPage(

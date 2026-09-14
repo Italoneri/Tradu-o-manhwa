@@ -14,7 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-PIPELINE_VERSION = 3
+PIPELINE_VERSION = 4
 """Sobe quando detect/ocr/ordering mudam de forma que invalida extracoes salvas."""
 
 BlockKind = Literal["bubble", "free"]
@@ -106,6 +106,14 @@ class ExtractedBlock(Frozen):
     tamanho em que a pagina foi letrada; sem ele o leitor so consegue estimar a
     partir do balao, e balao grande nao significa texto grande."""
 
+    overflow_bottom: int = Field(default=0, ge=0)
+    """Quantos pixels da fala passam da base desta pagina e seguem na proxima.
+
+    Uma captura que chega ja fatiada pode ter cortado a fala no meio. Quando isso
+    acontece a fala e uma so, e guarda-la como dois blocos duplicaria a traducao;
+    ela fica na pagina onde comeca e este campo diz quanto sobra para baixo. Zero
+    na esmagadora maioria dos blocos, que cabem na propria pagina."""
+
 
 class ExtractedPage(Frozen):
     index: int = Field(ge=1)
@@ -152,6 +160,14 @@ class TranslatedBlock(Frozen):
     Mediana da altura das caixas de palavra do Tesseract. E o unico sinal direto do
     tamanho em que a pagina foi letrada; sem ele o leitor so consegue estimar a
     partir do balao, e balao grande nao significa texto grande."""
+
+    overflow_bottom: int = Field(default=0, ge=0)
+    """Quantos pixels da fala passam da base desta pagina e seguem na proxima.
+
+    Uma captura que chega ja fatiada pode ter cortado a fala no meio. Quando isso
+    acontece a fala e uma so, e guarda-la como dois blocos duplicaria a traducao;
+    ela fica na pagina onde comeca e este campo diz quanto sobra para baixo. Zero
+    na esmagadora maioria dos blocos, que cabem na propria pagina."""
 
 
 class TranslatedPage(Frozen):

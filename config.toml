@@ -48,6 +48,10 @@ min_ink_ratio = 0.02            # abaixo disso o balao esta vazio
 max_ink_ratio = 0.40            # acima disso e arte escura, nao texto
 merge_iou = 0.30
 
+# Este vale para os dois backends: a fala cortada pela emenda entre paginas so
+# aparece inteira quando o detector ve as duas metades juntas.
+seam_band = 0.40                # fracao de cada pagina na faixa de emenda
+
 # Calibrar o "rtdetr" e outra coisa: so estes dois limiares, nada de forma nem de brilho.
 [detect.rtdetr]
 model_id = "ogkalu/comic-text-and-bubble-detector"

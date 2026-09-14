@@ -257,7 +257,7 @@ function round(value) {
 }
 
 function bubbleHtml(block, page) {
-  const rect = overlayBox(block.bbox, block.text_bbox, page);
+  const rect = overlayBox(block, page);
   const size = fontCqw({
     bbox: block.bbox,
     page,

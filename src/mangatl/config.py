@@ -75,6 +75,20 @@ class DetectConfig(Frozen):
     max_ink_ratio: float = Field(default=0.40, ge=0, le=1)
     merge_iou: float = Field(default=0.30, ge=0, le=1)
 
+    seam_band: float = Field(default=0.40, gt=0, le=0.5)
+    """Fracao de cada pagina que entra na faixa que atravessa a emenda.
+
+    Vale para os dois backends: quem fatia nao e o detector, e a origem.
+
+    Medido nas 6 primeiras emendas candidatas de manhwa/001, 0.40 contra 0.25: le
+    melhor em 3 e nunca pior. `'I keri'` volta a ser `'I kept'`, `'CALL ME DY MY
+    NAME TOO.'` volta a ser `'BY'` com a confianca subindo de 91.8 para 96.0, e a
+    frase que a faixa curta entregava sem o `'AND WHEN I STEPPED'` sai inteira.
+    Faixa maior da mais contexto ao detector e ao Tesseract.
+
+    Acima de 0.5 as faixas de duas emendas vizinhas passariam a se sobrepor, e a
+    mesma fala seria achada duas vezes."""
+
 
 class SlicingConfig(Frozen):
     """Fatiamento de captura de rolagem. `max_height` casa com `max_image_side`
