@@ -5,7 +5,7 @@
    - library.json e o shell mudam a cada processamento -> rede primeiro, cache como rede de seguranca
 */
 
-const VERSION = "mangatl-v2";
+const VERSION = "mangatl-v3";
 const SHELL = ["./", "./index.html", "./app.js", "./overlay.js", "./style.css", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", (event) => {

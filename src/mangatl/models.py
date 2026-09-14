@@ -146,11 +146,15 @@ class ChapterEntry(Frozen):
     chapter: str
     page_count: int
     engines: tuple[str, ...]
+    cover: str | None = None
+    """Caminho servivel da capa, relativo a raiz servida. None quando o capitulo nao tem."""
 
 
 class SeriesEntry(Frozen):
     series: str
     chapters: tuple[ChapterEntry, ...]
+    cover: str | None = None
+    """A capa propria da serie, ou a herdada do primeiro capitulo que tiver uma."""
 
 
 class Library(Frozen):

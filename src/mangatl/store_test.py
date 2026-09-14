@@ -18,6 +18,7 @@ from .models import (
 from .store import (
     build_library,
     discover_chapters,
+    find_cover,
     image_sha256,
     is_page_current,
     list_page_images,
@@ -209,3 +210,90 @@ def test_rejects_glossary_that_is_not_an_object(cfg: Config):
 
     with pytest.raises(ValueError, match="objeto JSON"):
         load_glossary(cfg, "serie")
+
+
+def write_cover(cfg: Config, series: str, chapter: str | None, name: str) -> Path:
+    """Capa da serie quando `chapter` e None, capa do capitulo quando nao."""
+    parent = cfg.library_dir / series if chapter is None else cfg.library_dir / series / chapter
+    parent.mkdir(parents=True, exist_ok=True)
+    path = parent / name
+    path.write_bytes(name.encode())
+    return path
+
+
+@pytest.mark.parametrize("name", ["cover.jpg", "cover.png", "cover.webp", "COVER.JPG"])
+def test_finds_cover_in_any_image_format(cfg: Config, name: str):
+    write_pages(cfg, "serie", "001", ["001.jpg"])
+    write_cover(cfg, "serie", "001", name)
+
+    found = find_cover(cfg.library_dir / "serie" / "001")
+
+    assert found is not None
+    assert found.name == name
+
+
+def test_keeps_cover_out_of_the_pages(cfg: Config):
+    """Senao a capa vira pagina: entra no OCR, na traducao e no meio da leitura."""
+    write_pages(cfg, "serie", "001", ["001.jpg", "002.jpg"])
+    write_cover(cfg, "serie", "001", "cover.jpg")
+
+    names = [path.name for path in list_page_images(cfg.library_dir / "serie" / "001")]
+
+    assert names == ["001.jpg", "002.jpg"]
+
+
+def test_finds_no_cover_when_the_chapter_has_none(cfg: Config):
+    write_pages(cfg, "serie", "001", ["001.jpg"])
+
+    assert find_cover(cfg.library_dir / "serie" / "001") is None
+
+
+def test_ignores_a_cover_that_is_not_an_image(cfg: Config):
+    write_pages(cfg, "serie", "001", ["001.jpg"])
+    write_cover(cfg, "serie", "001", "cover.txt")
+
+    assert find_cover(cfg.library_dir / "serie" / "001") is None
+
+
+def test_reports_the_chapter_cover_as_a_servable_path(cfg: Config):
+    write_pages(cfg, "serie", "001", ["001.jpg"])
+    write_cover(cfg, "serie", "001", "cover.png")
+    save_chapter(cfg, chapter_for("serie", "001", "free"))
+
+    library = build_library(cfg)
+
+    assert library.series[0].chapters[0].cover == "library/serie/001/cover.png"
+
+
+def test_prefers_the_series_own_cover_over_a_chapters(cfg: Config):
+    write_pages(cfg, "serie", "001", ["001.jpg"])
+    write_cover(cfg, "serie", "001", "cover.jpg")
+    write_cover(cfg, "serie", None, "cover.png")
+    save_chapter(cfg, chapter_for("serie", "001", "free"))
+
+    library = build_library(cfg)
+
+    assert library.series[0].cover == "library/serie/cover.png"
+
+
+def test_inherits_the_series_cover_from_the_first_chapter_that_has_one(cfg: Config):
+    write_pages(cfg, "serie", "001", ["001.jpg"])
+    write_pages(cfg, "serie", "002", ["001.jpg"])
+    write_cover(cfg, "serie", "002", "cover.jpg")
+    save_chapter(cfg, chapter_for("serie", "001", "free"))
+    save_chapter(cfg, chapter_for("serie", "002", "free"))
+
+    library = build_library(cfg)
+
+    assert library.series[0].cover == "library/serie/002/cover.jpg"
+    assert library.series[0].chapters[0].cover is None
+
+
+def test_reports_no_cover_when_nothing_has_one(cfg: Config):
+    write_pages(cfg, "serie", "001", ["001.jpg"])
+    save_chapter(cfg, chapter_for("serie", "001", "free"))
+
+    library = build_library(cfg)
+
+    assert library.series[0].cover is None
+    assert library.series[0].chapters[0].cover is None
