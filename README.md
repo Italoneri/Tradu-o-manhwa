@@ -337,21 +337,29 @@ linha de menos tinta que o corte escolheu — invisível no pixel. Cada fatia é
 sobreposta em 1px sobre a anterior, senão o arredondamento da altura em escala abre
 uma linha de fundo entre elas.
 
-A fala traduzida é escrita **dentro do balão**, numa caixa branca posicionada pela
-`bbox`. Tudo em unidade relativa: a posição em porcentagem da fatia, o tamanho da
-fonte em `cqw` (fração da largura da tira). Por isso o overlay acompanha qualquer
-largura de tela sem recalcular nada — 998px de origem viram 430px no celular e as
-coordenadas continuam certas.
+A fala traduzida é escrita **dentro do balão**, numa caixa branca do tamanho do
+texto original — não do balão. O OCR guarda duas medidas por fala: `text_bbox`, a
+união das caixas de palavra que o Tesseract leu, e `source_font_px`, a mediana da
+altura delas. A primeira diz onde o branco precisa cobrir; a segunda, em que corpo
+a página foi letrada. Sem elas o leitor só conseguia estimar a partir do balão, e
+balão grande não significa texto grande.
+
+Tudo em unidade relativa: a posição em porcentagem da fatia, o tamanho da fonte em
+`cqw` (fração da largura da tira). Por isso o overlay acompanha qualquer largura de
+tela sem recalcular nada — 998px de origem viram 430px no celular e as coordenadas
+continuam certas.
 
 O botão **tradução** liga e desliga o overlay, e o estado fica guardado. Desligado,
 a arte aparece intacta.
 
 ### Três limites conhecidos
 
-**Não há inpainting.** A caixa é branca e retangular, e o contorno do balão
-desaparece debaixo dela. Funciona porque a detecção só aceita balão de interior
-claro (`min_interior_brightness`), então o branco encosta na cor que já estava lá —
-mas num balão colorido ou em SFX a caixa fica visível.
+**Não há inpainting.** A caixa é branca e retangular. Ela cobre só a região do
+texto original, então o contorno do balão sobrevive — medido neste capítulo, a bbox
+do balão tem 4,3x a área do texto na mediana, e era tudo isso que a caixa pintava
+antes. Funciona porque a detecção só aceita balão de interior claro
+(`min_interior_brightness`), então o branco encosta na cor que já estava lá — mas
+num balão colorido ou em SFX a caixa continua visível.
 
 **O português é mais longo que o inglês.** Quando a fala não cabe, a fonte encolhe
 até o piso de legibilidade (`FONT_FLOOR_CQW`, ~28px na resolução de origem) e a

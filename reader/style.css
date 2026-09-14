@@ -347,6 +347,7 @@ main { padding: var(--space-8) var(--space-8) 64px; max-width: 1180px; margin: 0
 .bubble .t {
   width: max-content;
   max-width: 100%;
+  min-width: var(--min-w, 0);
   background: #fff;
   box-shadow: 0 0 0 2px #fff;
   /* em, e nao px: o canto acompanha o corpo da fonte, que muda a cada balao. */

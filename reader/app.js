@@ -10,7 +10,7 @@
    router de verdade custaria mais do que resolve.
 */
 
-import { bubbleRect, estimateFontCqw, fitFontSize } from "./overlay.js";
+import { fitFontSize, fontCqw, overlayBox } from "./overlay.js";
 
 const ROOT = "..";
 const params = new URLSearchParams(location.search);
@@ -257,9 +257,17 @@ function round(value) {
 }
 
 function bubbleHtml(block, page) {
-  const rect = bubbleRect(block.bbox, page);
-  const size = estimateFontCqw(block.bbox, page, block.text);
-  const box = `left:${round(rect.left)}%;top:${round(rect.top)}%;width:${round(rect.width)}%;--h:${round(rect.height)}%`;
+  const rect = overlayBox(block.bbox, block.text_bbox, page);
+  const size = fontCqw({
+    bbox: block.bbox,
+    page,
+    text: block.text,
+    sourceFontPx: block.source_font_px,
+  });
+
+  const box =
+    `left:${round(rect.left)}%;top:${round(rect.top)}%;width:${round(rect.width)}%` +
+    `;--h:${round(rect.height)}%;--limit:${round(rect.limit)}%;--min-w:${round(rect.minWidth)}%`;
 
   return `<span class="bubble" style="${box};--size:${round(size)}" title="${escapeHtml(block.source_text)}"
       ><span class="t">${escapeHtml(block.text)}</span></span>`;
@@ -341,10 +349,10 @@ function fitSlice(slice) {
   for (const bubble of slice.querySelectorAll(".bubble")) {
     const inner = bubble.firstElementChild;
     const start = Number(bubble.style.getPropertyValue("--size"));
-    // A altura da caixa acompanha o texto, entao o alvo e a bbox do balao - o
-    // piso da caixa - e nao o que ela mede agora. Vem da fatia e nao de
-    // `getComputedStyle`, que devolve `min-height` percentual ainda em `%`.
-    const limit = (parseFloat(bubble.style.getPropertyValue("--h")) / 100) * slice.clientHeight;
+    // `--limit` e a altura do balao, e nao a da caixa branca: a fala pode ocupar o
+    // balao inteiro antes de passar dele. Vem da fatia e nao de `getComputedStyle`,
+    // que devolveria a porcentagem ainda em `%`.
+    const limit = (parseFloat(bubble.style.getPropertyValue("--limit")) / 100) * slice.clientHeight;
 
     // Mede o filho, e nao `scrollHeight` da caixa: o texto e centrado, e
     // transbordo centrado sai pelos dois lados - scrollHeight so ve um.
