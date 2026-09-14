@@ -127,14 +127,24 @@ function coverHtml(cover, name) {
   return `<img src="${escapeHtml(assetUrl(cover))}" alt="Capa de ${escapeHtml(name)}" loading="lazy" decoding="async">`;
 }
 
+/** O nome que a pessoa le.
+ *
+ * O slug e o nome da pasta e a chave de toda URL e de todo caminho gravado nos
+ * JSONs; o titulo e o que muda sem quebrar caminho nenhum. `library.json` de antes
+ * deste campo nao traz titulo, e ai o slug e o que sobra.
+ */
+function seriesTitle(entry) {
+  return (entry && (entry.title || entry.series)) || "";
+}
+
 function workHtml(series) {
   const chapters = series.chapters.length;
   const pages = series.chapters.reduce((total, chapter) => total + Number(chapter.page_count), 0);
 
   return `<a class="work" href="${escapeHtml(seriesHref(series.series))}">
-    <div class="cover">${coverHtml(series.cover, series.series)}</div>
+    <div class="cover">${coverHtml(series.cover, seriesTitle(series))}</div>
     <div>
-      <h2>${escapeHtml(series.series)}</h2>
+      <h2>${escapeHtml(seriesTitle(series))}</h2>
       <p>${chapters} ${chapters === 1 ? "capítulo" : "capítulos"} · ${pages} páginas</p>
     </div>
   </a>`;
@@ -187,14 +197,14 @@ function renderChapters(series) {
   const count = series.chapters.length;
   const pages = series.chapters.reduce((total, chapter) => total + Number(chapter.page_count), 0);
 
-  document.title = `${series.series} · Tinta`;
+  document.title = `${seriesTitle(series)} · Tinta`;
   setChrome({ back: { href: "index.html", label: "Biblioteca" } });
   el.main.className = "";
 
   el.main.innerHTML = `
     <div class="head">
       <div>
-        <h1>${escapeHtml(series.series)}</h1>
+        <h1>${escapeHtml(seriesTitle(series))}</h1>
         <p>${pages} páginas traduzidas</p>
       </div>
       <span class="count">${count} ${count === 1 ? "capítulo" : "capítulos"}</span>
@@ -223,10 +233,12 @@ function renderChapter(library, chapterData, entry, engine) {
     ? readerHref(neighbours.following.series, neighbours.following.chapter, engine)
     : null;
 
-  document.title = `${series} ${chapter} · Tinta`;
+  const title = seriesTitle(library.series.find((item) => item.series === series));
+
+  document.title = `${title} ${chapter} · Tinta`;
   setChrome({
-    back: { href: seriesHref(series), label: series },
-    title: series,
+    back: { href: seriesHref(series), label: title },
+    title,
     subtitle: `Capítulo ${chapter} · ${engine}${chapterData.model ? ` · ${chapterData.model}` : ""}`,
     reader: true,
   });

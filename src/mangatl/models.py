@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 PIPELINE_VERSION = 4
 """Sobe quando detect/ocr/ordering mudam de forma que invalida extracoes salvas."""
@@ -196,11 +196,51 @@ class ChapterEntry(Frozen):
     """Caminho servivel da capa, relativo a raiz servida. None quando o capitulo nao tem."""
 
 
+class SeriesMeta(Frozen):
+    """Conteudo de `library/<slug>/series.json`, todo opcional.
+
+    Existe para separar o titulo do nome da pasta. O nome da pasta e o slug: ele e
+    a chave em toda URL e em todo caminho gravado nos JSONs, entao renomear a pasta
+    para corrigir um titulo obrigaria a reprocessar o capitulo inteiro.
+
+    Chave desconhecida e ignorada em vez de recusada, ao contrario do resto dos
+    modelos: este arquivo e editavel na mao, e um typo nele nao pode derrubar a
+    biblioteca inteira na hora de montar o indice.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    title: str = ""
+    """Vazio significa "use o slug"."""
+
+    cover: str | None = None
+    """Nome do arquivo de capa dentro da pasta da serie. Sem ele, vale o `cover.*`
+    que estiver la."""
+
+    status: str = ""
+    """Texto livre: "em andamento", "completo", o que o dono quiser escrever."""
+
+
 class SeriesEntry(Frozen):
     series: str
+    """O slug, que e o nome da pasta."""
+
+    title: str = ""
     chapters: tuple[ChapterEntry, ...]
     cover: str | None = None
     """A capa propria da serie, ou a herdada do primeiro capitulo que tiver uma."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _title_defaults_to_the_slug(cls, data: object) -> object:
+        """Sem titulo, o titulo e o slug.
+
+        `library.json` gerado antes deste campo continua validando, e o leitor
+        nunca precisa saber que o default existe.
+        """
+        if isinstance(data, dict) and not data.get("title"):
+            return {**data, "title": data.get("series", "")}
+        return data
 
 
 class Library(Frozen):

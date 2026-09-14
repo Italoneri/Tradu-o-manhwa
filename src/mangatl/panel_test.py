@@ -9,14 +9,19 @@ import pytest
 
 from .config import Config
 from .panel import (
+    MAX_JSON_BYTES,
     ROUTES,
+    Invalid,
+    image_suffix,
     is_local_client,
+    json_body,
     make_panel_handler,
     match_route,
     request_path,
     safe_archive_members,
     safe_component,
     safe_page_name,
+    validate_glossary,
 )
 from .serving import _Server
 
@@ -101,19 +106,96 @@ def test_extracts_only_harmless_archive_entries(
     assert safe_archive_members(members) == expected, name
 
 
-def test_routes_the_known_paths():
-    for method, pattern, handler in ROUTES:
-        path = pattern.pattern.strip("^$")
-        match = match_route(method, path)
-        assert match is not None and match.handler is handler, path
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/api/health"),
+        ("GET", "/api/series"),
+        ("POST", "/api/series"),
+        ("GET", "/api/series/obra/series.json"),
+        ("PUT", "/api/series/obra/series.json"),
+        ("PUT", "/api/series/obra/cover"),
+        ("GET", "/api/series/obra/glossary"),
+        ("PUT", "/api/series/obra/glossary"),
+    ],
+)
+def test_routes_every_declared_path(method: str, path: str):
+    match = match_route(method, path)
+    assert match is not None and match.route is not None, f"{method} {path}"
+
+
+def test_declares_no_duplicate_route():
+    keys = [(route.method, route.pattern.pattern) for route in ROUTES]
+    assert len(keys) == len(set(keys))
+
+
+def test_captures_the_slug_from_the_path():
+    match = match_route("GET", "/api/series/Eu%20me%20tornei/glossary")
+
+    assert match is not None
+    assert match.groups == ("Eu me tornei",)
 
 
 def test_answers_405_and_not_404_for_the_wrong_method():
-    match = match_route("POST", "/api/health")
+    match = match_route("DELETE", "/api/health")
 
     assert match is not None
-    assert match.handler is None
+    assert match.route is None
     assert match.allowed == ("GET",)
+
+
+@pytest.mark.parametrize(
+    ("name", "payload", "expected"),
+    [
+        ("glossario comum", {"Zhuge": "Zhuge", "Sect Master": "Mestre da Seita"}, None),
+        ("vazio passa", {}, None),
+        ("recusa lista", ["a"], "objeto JSON"),
+        ("recusa texto solto", "Zhuge", "objeto JSON"),
+        ("recusa termo vazio", {"": "x"}, "nao pode ser vazio"),
+        ("recusa termo so de espaco", {"  ": "x"}, "nao pode ser vazio"),
+        ("recusa traducao que nao e texto", {"Zhuge": 3}, "precisa ser texto"),
+        ("recusa dicionario inteiro", {str(n): "x" for n in range(501)}, "o teto e 500"),
+    ],
+)
+def test_validates_the_glossary_at_the_edge(name: str, payload: object, expected: str | None):
+    if expected is None:
+        assert validate_glossary(payload) == payload, name
+        return
+    with pytest.raises(Invalid, match=expected):
+        validate_glossary(payload)
+
+
+@pytest.mark.parametrize(
+    ("name", "data", "expected"),
+    [
+        ("jpeg", b"\xff\xd8\xff\xe0" + b"0" * 20, ".jpg"),
+        ("png", b"\x89PNG\r\n\x1a\n" + b"0" * 20, ".png"),
+        ("bmp", b"BM" + b"0" * 20, ".bmp"),
+        ("webp", b"RIFF" + b"0000" + b"WEBP" + b"0" * 20, ".webp"),
+        ("executavel disfarcado", b"MZ" + b"0" * 20, None),
+        ("texto", b"nao sou imagem", None),
+        ("vazio", b"", None),
+    ],
+)
+def test_reads_the_format_from_the_bytes(name: str, data: bytes, expected: str | None):
+    # Do conteudo e nao do Content-Type: o cabecalho e do cliente.
+    assert image_suffix(data) == expected, name
+
+
+@pytest.mark.parametrize(
+    ("name", "body", "expected"),
+    [
+        ("objeto", b'{"a": 1}', {"a": 1}),
+        ("corpo vazio vira nulo", b"", None),
+    ],
+)
+def test_parses_the_json_body(name: str, body: bytes, expected: object):
+    assert json_body(body) == expected, name
+
+
+def test_refuses_a_body_that_is_not_json():
+    with pytest.raises(Invalid, match="nao e JSON"):
+        json_body(b"{nao")
 
 
 @pytest.mark.parametrize(
@@ -219,3 +301,151 @@ def test_refuses_a_write_method_outside_the_panel(panel_server: int):
     # Sem rota e sem arquivo para servir: PUT em caminho de leitor nao tem para
     # onde cair.
     assert _get(panel_server, "/reader/app.js", method="PUT")[0] == 404
+
+
+# ---------- rotas de escrita, pelo servidor de verdade ----------
+
+PNG = bytes.fromhex("89504e470d0a1a0a") + b"0" * 32
+JPEG = bytes.fromhex("ffd8ffe0") + b"0" * 32
+
+
+def _send(
+    port: int,
+    method: str,
+    path: str,
+    body: bytes | None = None,
+    *,
+    declare_length: bool = True,
+) -> tuple[int, bytes]:
+    """Pedido cru, para poder omitir o Content-Length de proposito."""
+    connection = HTTPConnection("127.0.0.1", port, timeout=5)
+    connection.putrequest(method, path)
+    if body is not None and declare_length:
+        connection.putheader("Content-Length", str(len(body)))
+    connection.endheaders()
+    if body is not None and declare_length:
+        connection.send(body)
+    response = connection.getresponse()
+    payload = response.read()
+    connection.close()
+    return response.status, payload
+
+
+def _put_json(port: int, path: str, payload: object) -> tuple[int, bytes]:
+    return _send(port, "PUT", path, json.dumps(payload).encode("utf-8"))
+
+
+def test_creates_a_series_with_slug_and_title(panel_server: int, tmp_path: Path):
+    status, body = _send(
+        panel_server,
+        "POST",
+        "/api/series",
+        json.dumps({"slug": "Obra Nova", "title": "Obra Nova, o Titulo"}).encode("utf-8"),
+    )
+
+    assert status == 201
+    assert json.loads(body)["slug"] == "Obra Nova"
+    assert (tmp_path / "library" / "Obra Nova" / "series.json").is_file()
+
+
+def test_refuses_to_create_a_series_twice(panel_server: int):
+    payload = json.dumps({"slug": "Repetida"}).encode("utf-8")
+    assert _send(panel_server, "POST", "/api/series", payload)[0] == 201
+    assert _send(panel_server, "POST", "/api/series", payload)[0] == 409
+
+
+@pytest.mark.parametrize(
+    ("name", "slug"),
+    [("fuga", "../fora"), ("oculta", ".git"), ("vazia", "")],
+)
+def test_refuses_a_hostile_series_name(panel_server: int, name: str, slug: str):
+    status, body = _send(
+        panel_server, "POST", "/api/series", json.dumps({"slug": slug}).encode("utf-8")
+    )
+
+    assert status == 422, name
+    assert b"inaceitavel" in body, name
+
+
+def test_keeps_the_glossary_across_a_write_and_a_read(panel_server: int):
+    _send(panel_server, "POST", "/api/series", json.dumps({"slug": "Obra"}).encode("utf-8"))
+    terms = {"Zhuge": "Zhuge", "Sect Master": "Mestre da Seita"}
+
+    assert _put_json(panel_server, "/api/series/Obra/glossary", terms)[0] == 200
+
+    status, body = _send(panel_server, "GET", "/api/series/Obra/glossary")
+    assert status == 200
+    assert json.loads(body) == terms
+
+
+def test_answers_422_and_not_500_for_a_broken_glossary(panel_server: int):
+    _send(panel_server, "POST", "/api/series", json.dumps({"slug": "Obra"}).encode("utf-8"))
+
+    status, body = _put_json(panel_server, "/api/series/Obra/glossary", ["nao", "e", "objeto"])
+
+    assert status == 422
+    assert b"objeto JSON" in body
+
+
+def test_answers_422_for_a_series_that_does_not_exist(panel_server: int):
+    status, body = _send(panel_server, "GET", "/api/series/nao-existe/glossary")
+
+    assert status == 422
+    assert b"nao existe" in body
+
+
+def test_writes_the_cover_with_the_suffix_the_bytes_ask_for(panel_server: int, tmp_path: Path):
+    _send(panel_server, "POST", "/api/series", json.dumps({"slug": "Obra"}).encode("utf-8"))
+
+    assert _send(panel_server, "PUT", "/api/series/Obra/cover", PNG)[0] == 200
+    assert (tmp_path / "library" / "Obra" / "cover.png").is_file()
+
+
+def test_replaces_the_old_cover_instead_of_stacking_one(panel_server: int, tmp_path: Path):
+    _send(panel_server, "POST", "/api/series", json.dumps({"slug": "Obra"}).encode("utf-8"))
+    _send(panel_server, "PUT", "/api/series/Obra/cover", PNG)
+    _send(panel_server, "PUT", "/api/series/Obra/cover", JPEG)
+
+    covers = sorted(p.name for p in (tmp_path / "library" / "Obra").glob("cover.*"))
+    assert covers == ["cover.jpg"]
+
+
+def test_refuses_a_cover_that_is_not_an_image(panel_server: int):
+    _send(panel_server, "POST", "/api/series", json.dumps({"slug": "Obra"}).encode("utf-8"))
+
+    status, body = _send(panel_server, "PUT", "/api/series/Obra/cover", b"MZ" + b"0" * 40)
+
+    assert status == 422
+    assert b"nao e jpeg" in body
+
+
+def test_demands_a_declared_length_on_a_write(panel_server: int):
+    # `http.server` nao decodifica chunked e o painel nao adivinha tamanho.
+    status, _ = _send(panel_server, "PUT", "/api/series/Obra/glossary", b"{}", declare_length=False)
+    assert status == 411
+
+
+def test_refuses_a_body_over_the_route_ceiling_before_reading_it(panel_server: int):
+    connection = HTTPConnection("127.0.0.1", panel_server, timeout=5)
+    connection.putrequest("PUT", "/api/series/Obra/glossary")
+    connection.putheader("Content-Length", str(MAX_JSON_BYTES + 1))
+    connection.endheaders()
+    response = connection.getresponse()
+    status = response.status
+    connection.close()
+
+    assert status == 413
+
+
+def test_shows_the_title_from_series_json(panel_server: int, tmp_path: Path):
+    _send(
+        panel_server,
+        "POST",
+        "/api/series",
+        json.dumps({"slug": "obra-slug", "title": "O Titulo Bonito"}).encode("utf-8"),
+    )
+
+    status, body = _send(panel_server, "GET", "/api/series/obra-slug/series.json")
+
+    assert status == 200
+    assert json.loads(body)["title"] == "O Titulo Bonito"

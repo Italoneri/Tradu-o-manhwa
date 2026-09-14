@@ -14,7 +14,7 @@ import hashlib
 import json
 import re
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,6 +25,7 @@ from .models import (
     Extraction,
     Library,
     SeriesEntry,
+    SeriesMeta,
 )
 
 IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp", ".bmp"})
@@ -37,6 +38,8 @@ entao a alternativa - "toda imagem fora do padrao de nome e capa" - nao consegue
 escolher entre duas imagens soltas, e escolheria errado em silencio.
 """
 LIBRARY_FILENAME = "library.json"
+SERIES_FILENAME = "series.json"
+GLOSSARY_FILENAME = "glossary.json"
 _DIGITS = re.compile(r"(\d+)")
 
 
@@ -123,13 +126,39 @@ def save_chapter(cfg: Config, chapter: Chapter) -> Path:
 
 def load_glossary(cfg: Config, series: str) -> dict[str, str]:
     """Termos e nomes proprios fixos da serie, para o motor manter consistencia entre capitulos."""
-    path = cfg.library_dir / series / "glossary.json"
+    path = cfg.library_dir / series / GLOSSARY_FILENAME
     if not path.is_file():
         return {}
     loaded = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(loaded, dict):
         raise ValueError(f"{path} deve conter um objeto JSON de termo -> traducao")
     return {str(key): str(value) for key, value in loaded.items()}
+
+
+def save_glossary(cfg: Config, series: str, terms: Mapping[str, str]) -> Path:
+    return _write_json(cfg.library_dir / series / GLOSSARY_FILENAME, dict(terms))
+
+
+def load_series_meta(cfg: Config, series: str) -> SeriesMeta:
+    """Titulo e status da serie, com os defaults quando o arquivo nao existe.
+
+    Tolerante no molde de `load_glossary`: ausente devolve defaults, e o titulo
+    vazio quer dizer "use o slug". Quem escreve o arquivo pelo painel ja validou
+    antes; quem escreveu na mao nao pode derrubar a biblioteca por um typo.
+    """
+    path = cfg.library_dir / series / SERIES_FILENAME
+    if not path.is_file():
+        return SeriesMeta(title=series)
+
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError(f"{path} deve conter um objeto JSON")
+    meta = SeriesMeta.model_validate(loaded)
+    return meta if meta.title else meta.model_copy(update={"title": series})
+
+
+def save_series_meta(cfg: Config, series: str, meta: SeriesMeta) -> Path:
+    return _write_json(cfg.library_dir / series / SERIES_FILENAME, meta.model_dump(mode="json"))
 
 
 def is_page_current(extraction: Extraction | None, image: Path, pipeline_version: int) -> bool:
@@ -169,12 +198,31 @@ def _translated_engines(cfg: Config, series: str, chapter: str) -> tuple[str, ..
     )
 
 
-def _series_cover(cfg: Config, series: str, chapters: Iterable[ChapterEntry]) -> str | None:
-    """A capa propria da serie tem precedencia; sem ela, a do primeiro capitulo que tiver."""
+def _series_cover(
+    cfg: Config, series: str, chapters: Iterable[ChapterEntry], declared: str | None
+) -> str | None:
+    """A capa da serie, da mais explicita para a mais adivinhada.
+
+    O `series.json` vem primeiro porque e a unica das tres que alguem escreveu de
+    proposito; so vale se o arquivo existir mesmo, senao um nome errado ali
+    apagaria a capa que ja funcionava.
+    """
+    if declared and (cfg.library_dir / series / declared).is_file():
+        return f"{cfg.paths.library}/{series}/{declared}"
     own = _cover_url(cfg, cfg.library_dir / series)
     if own is not None:
         return own
     return next((entry.cover for entry in chapters if entry.cover is not None), None)
+
+
+def _series_entry(cfg: Config, series: str, chapters: list[ChapterEntry]) -> SeriesEntry:
+    meta = load_series_meta(cfg, series)
+    return SeriesEntry(
+        series=series,
+        title=meta.title,
+        chapters=tuple(chapters),
+        cover=_series_cover(cfg, series, chapters, meta.cover),
+    )
 
 
 def build_library(cfg: Config) -> Library:
@@ -200,8 +248,7 @@ def build_library(cfg: Config) -> Library:
         library_base=cfg.paths.library,
         output_base=cfg.paths.output,
         series=tuple(
-            SeriesEntry(series=series, chapters=tuple(chapters), cover=_series_cover(cfg, series, chapters))
-            for series, chapters in chapters_by_series.items()
+            _series_entry(cfg, series, chapters) for series, chapters in chapters_by_series.items()
         ),
     )
 

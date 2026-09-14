@@ -27,14 +27,23 @@ import re
 import sys
 from collections.abc import Callable, Sequence
 from http import HTTPStatus
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 from urllib.parse import unquote
 
 from .config import Config
 from .engines.base import available_engines
+from .models import SeriesMeta
 from .serving import ReaderHandler, serve_handler
-from .store import IMAGE_SUFFIXES, build_library
+from .store import (
+    COVER_STEM,
+    IMAGE_SUFFIXES,
+    build_library,
+    load_glossary,
+    load_series_meta,
+    save_glossary,
+    save_series_meta,
+)
 
 API_PREFIX = "/api/"
 
@@ -53,6 +62,13 @@ MAX_ARCHIVE_BYTES = 500 * 1024 * 1024
 
 MAX_PAGES_PER_CHAPTER = 400
 """O capitulo medido aqui tem 155 fatias. Acima de 400 e pasta errada, nao capitulo."""
+
+MAX_JSON_BYTES = 1024 * 1024
+"""Corpo JSON do painel. Um glossario cheio nao passa de dezenas de KB; 1MB ja e
+sinal de que veio coisa errada pelo cano."""
+
+MAX_GLOSSARY_ENTRIES = 500
+"""Acima disso nao e glossario de serie, e despejo de dicionario."""
 
 MAX_ARCHIVE_EXPANDED_BYTES = 2 * 1024 * 1024 * 1024
 """Teto do descompactado, conferido somando `ZipInfo.file_size` ANTES de extrair.
@@ -135,19 +151,91 @@ def safe_archive_members(names: Sequence[str]) -> list[str] | None:
     return kept
 
 
+# ---------- o que chega no corpo ----------
+
+
+class Invalid(ValueError):
+    """Pedido malformado.
+
+    Existe para o handler poder desistir numa linha e ainda assim virar 422 com a
+    mensagem legivel, em vez de 500 com stack trace - erro de quem chamou nao e
+    defeito de quem atende.
+    """
+
+
+def json_body(body: bytes) -> object:
+    if len(body) > MAX_JSON_BYTES:
+        raise Invalid(f"corpo de {len(body)} bytes; o teto e {MAX_JSON_BYTES}")
+    try:
+        return json.loads(body or b"null")
+    except ValueError as error:
+        raise Invalid(f"corpo nao e JSON valido: {error}") from error
+
+
+def validate_glossary(payload: object) -> dict[str, str]:
+    """O glossario como o pipeline espera, ou `Invalid` com o que esta errado.
+
+    Validar na borda e o que impede o arquivo de virar um campo minado: quem le
+    depois e o motor de traducao, no meio de um capitulo, onde um valor que nao e
+    string vira erro sem contexto nenhum.
+    """
+    if not isinstance(payload, dict):
+        raise Invalid("o glossario e um objeto JSON de termo -> traducao")
+    if len(payload) > MAX_GLOSSARY_ENTRIES:
+        raise Invalid(f"{len(payload)} termos; o teto e {MAX_GLOSSARY_ENTRIES}")
+
+    terms: dict[str, str] = {}
+    for key, value in payload.items():
+        if not isinstance(key, str) or not key.strip():
+            raise Invalid("todo termo precisa ser texto e nao pode ser vazio")
+        if not isinstance(value, str):
+            raise Invalid(f"a traducao de {key!r} precisa ser texto")
+        terms[key] = value
+    return terms
+
+
+_IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"BM", ".bmp"),
+)
+
+
+def image_suffix(data: bytes) -> str | None:
+    """Extensao deduzida dos bytes, ou None se nao for imagem que o leitor serve.
+
+    Dos bytes e nao do `Content-Type`: o cabecalho e do cliente, e gravar
+    `cover.jpg` com um executavel dentro seria acreditar nele.
+    """
+    for magic, suffix in _IMAGE_MAGIC:
+        if data.startswith(magic):
+            return suffix
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return None
+
+
 # ---------- roteador ----------
 
 Handler = Callable[[Config, tuple[str, ...], bytes], tuple[int, object]]
 
 
+class Route(NamedTuple):
+    method: str
+    pattern: re.Pattern[str]
+    handler: Handler
+    max_body: int = MAX_JSON_BYTES
+    """Teto do corpo, conferido pelo `Content-Length` antes de ler um byte."""
+
+
 class RouteMatch(NamedTuple):
     """Resultado do casamento de rota.
 
-    `handler` None significa caminho certo e metodo errado, que e 405 e nao 404:
+    `route` None significa caminho certo e metodo errado, que e 405 e nao 404:
     dizer "nao existe" para `POST /api/health` esconderia o erro de quem chamou.
     """
 
-    handler: Handler | None
+    route: Route | None
     groups: tuple[str, ...] = ()
     allowed: tuple[str, ...] = ()
 
@@ -173,9 +261,108 @@ def _series(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, obj
     return HTTPStatus.OK, build_library(cfg).model_dump(mode="json")
 
 
-ROUTES: tuple[tuple[str, re.Pattern[str], Handler], ...] = (
-    ("GET", re.compile(r"^/api/health$"), _health),
-    ("GET", re.compile(r"^/api/series$"), _series),
+def _series_dir(cfg: Config, slug: str, *, must_exist: bool = True) -> Path:
+    name = safe_component(slug)
+    if name is None:
+        raise Invalid(f"nome de serie inaceitavel: {slug!r}")
+    directory = cfg.library_dir / name
+    if must_exist and not directory.is_dir():
+        raise Invalid(f"serie {name!r} nao existe")
+    return directory
+
+
+def _create_series(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    """Cria a pasta da serie e grava o titulo.
+
+    O slug e o nome da pasta e nao muda depois; o titulo muda a vontade. Confundir
+    os dois e a diferenca entre renomear a serie e reprocessar tudo.
+    """
+    payload = json_body(body)
+    if not isinstance(payload, dict):
+        raise Invalid("esperava um objeto com slug e title")
+
+    directory = _series_dir(cfg, str(payload.get("slug", "")), must_exist=False)
+    if directory.exists():
+        return HTTPStatus.CONFLICT, {"error": f"serie {directory.name!r} ja existe"}
+
+    title = payload.get("title", directory.name)
+    if not isinstance(title, str):
+        raise Invalid("title precisa ser texto")
+
+    directory.mkdir(parents=True)
+    save_series_meta(cfg, directory.name, SeriesMeta(title=title or directory.name))
+    return HTTPStatus.CREATED, {"slug": directory.name, "title": title or directory.name}
+
+
+def _get_series_meta(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    directory = _series_dir(cfg, groups[0])
+    return HTTPStatus.OK, load_series_meta(cfg, directory.name).model_dump(mode="json")
+
+
+def _put_series_meta(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    directory = _series_dir(cfg, groups[0])
+    payload = json_body(body)
+    if not isinstance(payload, dict):
+        raise Invalid("esperava um objeto com title, cover e status")
+
+    for field in ("title", "cover", "status"):
+        value = payload.get(field)
+        if value is not None and not isinstance(value, str):
+            raise Invalid(f"{field} precisa ser texto")
+
+    meta = SeriesMeta.model_validate(payload)
+    save_series_meta(cfg, directory.name, meta)
+    return HTTPStatus.OK, load_series_meta(cfg, directory.name).model_dump(mode="json")
+
+
+def _put_cover(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    """Grava a capa da serie, com a extensao que os bytes disserem ser.
+
+    As capas antigas saem junto: `_cover_url` escolhe entre `cover.*` pela ordem
+    das extensoes, e deixar duas la significaria trocar a capa sem a troca aparecer.
+    """
+    directory = _series_dir(cfg, groups[0])
+    suffix = image_suffix(body)
+    if suffix is None:
+        raise Invalid("o corpo nao e jpeg, png, webp nem bmp")
+
+    for old_cover in directory.glob(f"{COVER_STEM}.*"):
+        if old_cover.is_file():
+            old_cover.unlink()
+
+    target = directory / f"{COVER_STEM}{suffix}"
+    target.write_bytes(body)
+    return HTTPStatus.OK, {"cover": target.name, "bytes": len(body)}
+
+
+def _get_glossary(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    directory = _series_dir(cfg, groups[0])
+    return HTTPStatus.OK, load_glossary(cfg, directory.name)
+
+
+def _put_glossary(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    """Grava o glossario da serie.
+
+    E o arquivo que mais precisa de edicao recorrente: e ele que impede o
+    personagem de mudar de nome no capitulo seguinte.
+    """
+    directory = _series_dir(cfg, groups[0])
+    terms = validate_glossary(json_body(body))
+    save_glossary(cfg, directory.name, terms)
+    return HTTPStatus.OK, terms
+
+
+_SLUG = r"([^/]+)"
+
+ROUTES: tuple[Route, ...] = (
+    Route("GET", re.compile(r"^/api/health$"), _health),
+    Route("GET", re.compile(r"^/api/series$"), _series),
+    Route("POST", re.compile(r"^/api/series$"), _create_series),
+    Route("GET", re.compile(rf"^/api/series/{_SLUG}/series\.json$"), _get_series_meta),
+    Route("PUT", re.compile(rf"^/api/series/{_SLUG}/series\.json$"), _put_series_meta),
+    Route("PUT", re.compile(rf"^/api/series/{_SLUG}/cover$"), _put_cover, MAX_PAGE_BYTES),
+    Route("GET", re.compile(rf"^/api/series/{_SLUG}/glossary$"), _get_glossary),
+    Route("PUT", re.compile(rf"^/api/series/{_SLUG}/glossary$"), _put_glossary),
 )
 
 
@@ -192,13 +379,13 @@ def request_path(target: str) -> str:
 def match_route(method: str, path: str) -> RouteMatch | None:
     """Rota que atende, ou None quando o caminho nao existe."""
     allowed: list[str] = []
-    for route_method, pattern, handler in ROUTES:
-        found = pattern.match(path)
+    for route in ROUTES:
+        found = route.pattern.match(path)
         if found is None:
             continue
-        if route_method == method:
-            return RouteMatch(handler, tuple(unquote(group) for group in found.groups()))
-        allowed.append(route_method)
+        if route.method == method:
+            return RouteMatch(route, tuple(unquote(group) for group in found.groups()))
+        allowed.append(route.method)
 
     if allowed:
         return RouteMatch(None, allowed=tuple(allowed))
@@ -256,7 +443,7 @@ def make_panel_handler(cfg: Config) -> type[ReaderHandler]:
             if match is None:
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": f"rota {method} {path} nao existe"})
                 return True
-            if match.handler is None:
+            if match.route is None:
                 self._send_json(
                     HTTPStatus.METHOD_NOT_ALLOWED,
                     {"error": f"{method} nao vale aqui; use {', '.join(match.allowed)}"},
@@ -264,19 +451,58 @@ def make_panel_handler(cfg: Config) -> type[ReaderHandler]:
                 )
                 return True
 
-            status, payload = match.handler(cfg, match.groups, self._read_body())
+            body = self._read_body(method, match.route.max_body)
+            if body is None:
+                return True
+
+            try:
+                status, payload = match.route.handler(cfg, match.groups, body)
+            except Invalid as error:
+                self._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
+                return True
+            except Exception:  # noqa: BLE001 - erro nosso vira 500, nunca stack na resposta
+                self.log_error("falha em %s %s", method, path)
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "falha no painel"})
+                return True
+
             self._send_json(status, payload)
             return True
 
-        def _read_body(self) -> bytes:
-            """O corpo cru do pedido.
+        def _read_body(self, method: str, limit: int) -> bytes | None:
+            """O corpo cru, ou None quando ja respondeu recusando.
 
-            Sem Content-Length nao ha corpo. As rotas de upload, que precisam
-            recusar isso com 411, chegam junto com elas - hoje nenhuma rota le
-            corpo.
+            `http.server` nao decodifica `Transfer-Encoding: chunked` e o `cgi`,
+            que parseava multipart, saiu no Python 3.13. Por isso o painel exige
+            corpo cru com tamanho declarado: o `fetch` do navegador manda
+            `Content-Length` para `Blob`, e o que nao manda e outra coisa.
+
+            O teto e conferido no cabecalho, antes de ler um byte - recusar depois
+            de receber 500MB nao protege de nada.
             """
-            length = self.headers.get("Content-Length")
-            return self.rfile.read(int(length)) if length else b""
+            if "chunked" in self.headers.get("Transfer-Encoding", "").lower():
+                self._send_json(HTTPStatus.LENGTH_REQUIRED, {"error": "mande Content-Length"})
+                return None
+
+            raw = self.headers.get("Content-Length")
+            if raw is None:
+                if method in {"POST", "PUT"}:
+                    self._send_json(HTTPStatus.LENGTH_REQUIRED, {"error": "mande Content-Length"})
+                    return None
+                return b""
+
+            try:
+                length = int(raw)
+            except ValueError:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Content-Length nao e numero"})
+                return None
+
+            if length > limit:
+                self._send_json(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    {"error": f"corpo de {length} bytes; o teto desta rota e {limit}"},
+                )
+                return None
+            return self.rfile.read(length)
 
         def _send_json(self, status: int, payload: object, *, headers: dict | None = None) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
