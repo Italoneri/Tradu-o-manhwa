@@ -313,24 +313,23 @@ main { padding: var(--space-8) var(--space-8) 64px; max-width: 1180px; margin: 0
    que isso, e forcar a proporcao esmagaria a arte. */
 .slice img { display: block; width: 100%; height: auto; }
 
+/* A bolha e so ancora de posicao: nao pinta nada. `min-height` na altura da bbox
+   e o que centra o filho no meio do balao - que e onde o texto original esta - e
+   o que deixa a ancora crescer quando a fala traduzida nao cabe. Recortar perderia
+   parte da fala, e `--size` ja desceu ate o piso de legibilidade antes disso. */
 .bubble {
   position: absolute;
   /* Acima das imagens de todas as fatias, nao so da propria: a caixa que cresceu
      passa da borda da fatia e tem de aparecer sobre a arte da seguinte. */
   z-index: 1;
   display: grid;
+  /* A trilha nao pode ser `auto`: ela seria dimensionada pelo max-content do filho
+     e o `max-width: 100%` dele passaria a medir contra ela mesma, nao contra a
+     bbox. Medido na fala longa da fatia 25, o branco saia com 427px numa bbox de
+     206px, em uma linha so, por cima do painel vizinho. */
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
-  /* Altura automatica com piso na bbox: a caixa cobre o balao original e cresce
-     quando a fala traduzida nao cabe nele. Recortar perderia parte da fala, e
-     `--size` ja desceu ate o piso de legibilidade antes disso acontecer. */
   min-height: var(--h);
-  border-radius: 8px;
-  /* O branco se estende 2px para fora: a borda reta da caixa encosta no interior
-     do balao, que a deteccao garante claro, em vez de cortar a arte em angulo.
-     Branco fixo de proposito: e um balao de fala, nao superficie de interface -
-     nao acompanha o tema. */
-  box-shadow: 0 0 0 2px #fff;
-  background: #fff;
   color: #111;
   font-size: calc(var(--size) * 1cqw);
   font-weight: 600;
@@ -339,7 +338,23 @@ main { padding: var(--space-8) var(--space-8) 64px; max-width: 1180px; margin: 0
   text-transform: uppercase;
 }
 
-.bubble .t { padding: 2% 4%; hyphens: auto; overflow-wrap: break-word; }
+/* O branco acompanha o texto, nao a bbox. Num balao redondo a bbox e o quadrado
+   circunscrito e o texto ocupa uma fracao dela: pintar o quadrado inteiro apaga o
+   contorno do balao junto.
+   O branco se estende 2px para fora: a borda reta encosta no interior do balao,
+   que a deteccao garante claro, em vez de cortar a arte em angulo. Branco fixo de
+   proposito: e um balao de fala, nao superficie de interface - nao acompanha o tema. */
+.bubble .t {
+  width: max-content;
+  max-width: 100%;
+  background: #fff;
+  box-shadow: 0 0 0 2px #fff;
+  /* em, e nao px: o canto acompanha o corpo da fonte, que muda a cada balao. */
+  border-radius: 0.7em;
+  padding: 0.15em 0.5em;
+  hyphens: auto;
+  overflow-wrap: break-word;
+}
 
 body.hide-overlay .bubble { display: none; }
 

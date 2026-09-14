@@ -6,8 +6,13 @@
    pagina, e o tamanho da fonte vira `cqw`: 1cqw e 1% da largura da fatia. Com
    isso o overlay acompanha qualquer largura sem recalcular nada no resize. */
 
-export const FONT_MAX_CQW = 6;
-/** ~26px num celular de 430px de largura de fatia. Acima disso a fala grita. */
+export const FONT_MAX_CQW = 4.0;
+/** Teto temporario. Medido em output/manhwa/001, 81 dos 88 blocos com bbox saem
+    travados neste valor: a conta por area pede 15-18cqw para balao grande com
+    poucos caracteres, porque ela responde "que fonte preenche a caixa" e nao "que
+    fonte tem o tamanho do letreiramento". O original medido na amostra e ~3.9cqw.
+    A Fase 2 substitui a estimativa pelo corpo real da fonte original e este teto
+    volta a ser so uma trava de sanidade. */
 
 export const FONT_FLOOR_CQW = 2.8;
 /** ~12px no mesmo celular, ~28px na resolucao de origem - perto do tamanho em que

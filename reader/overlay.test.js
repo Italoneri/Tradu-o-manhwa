@@ -57,18 +57,21 @@ describe("estimateFontCqw", () => {
   });
 
   it("cresce quando o balao cresce", () => {
+    // Os dois baloes ficam abaixo do teto de proposito: acima dele a conta satura
+    // e o crescimento some, que e o bug que FONT_MAX_CQW documenta.
     const text = "VOCE NAO VAI PASSAR";
-    const small = estimateFontCqw(bubble, page, text);
-    const big = estimateFontCqw({ ...bubble, w: 600, h: 240 }, page, text);
+    const small = estimateFontCqw({ x: 100, y: 200, w: 180, h: 60 }, page, text);
+    const big = estimateFontCqw({ x: 100, y: 200, w: 225, h: 75 }, page, text);
     assert.ok(big > small, `esperava ${big} > ${small}`);
   });
 
   it("nao deixa uma linha mais alta que o balao", () => {
-    // Uma linha de 6cqw de altura nao cabe numa caixa de 6cqw: sobra a entrelinha.
-    const low = { x: 0, y: 0, w: 900, h: 60 };
+    // Uma linha nunca cabe inteira numa caixa da propria altura: sobra a entrelinha.
+    const low = { x: 0, y: 0, w: 900, h: 36 };
+    const heightCqw = (low.h * 100) / page.width;
     const size = estimateFontCqw(low, page, "!");
     assert.ok(size < FONT_MAX_CQW, `esperava menos que o teto, veio ${size}`);
-    assert.ok(size * 1.15 <= 6, `uma linha de ${size}cqw nao cabe em 6cqw`);
+    assert.ok(size * 1.15 <= heightCqw, `uma linha de ${size}cqw nao cabe em ${heightCqw}cqw`);
   });
 
   it("nao passa do teto com texto curto em balao grande", () => {
