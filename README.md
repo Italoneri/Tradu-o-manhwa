@@ -363,9 +363,11 @@ num balão colorido ou em SFX a caixa continua visível.
 
 **O português é mais longo que o inglês.** Quando a fala não cabe, a fonte encolhe
 até o piso de legibilidade (`FONT_FLOOR_CQW`, ~28px na resolução de origem) e a
-partir dali **a caixa cresce** em vez de cortar o texto. Medido neste capítulo, o
-pior caso cresceu 1,63x da altura do balão. Perder um pedaço de arte é melhor que
-perder metade da fala; se preferir o contrário, baixe o piso em `reader/overlay.js`.
+partir dali **a caixa cresce** em vez de cortar o texto. Medido neste capítulo: das
+88 falas, 13 encolhem, 3 chegam ao piso, 2 fazem a caixa crescer e o pior caso
+passa 1,37x da altura do balão. Nenhuma foi cortada. Perder um pedaço de arte é
+melhor que perder metade da fala; se preferir o contrário, baixe o piso em
+`reader/overlay.js`.
 
 **A bbox às vezes é do painel, não do balão.** Quando isso acontece a caixa branca
 tapa arte. O botão de tradução é a saída.
