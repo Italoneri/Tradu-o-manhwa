@@ -5,12 +5,17 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  ESTIMATE_MAX_CQW,
   FONT_FLOOR_CQW,
   FONT_MAX_CQW,
   FONT_SHRINK_RATIO,
+  SOURCE_FONT_RATIO,
   bubbleRect,
   estimateFontCqw,
   fitFontSize,
+  fontCqw,
+  grownBBox,
+  overlayBox,
 } from "./overlay.js";
 
 const page = { width: 1000, height: 2000 };
@@ -57,22 +62,25 @@ describe("estimateFontCqw", () => {
   });
 
   it("cresce quando o balao cresce", () => {
+    // Os dois baloes ficam abaixo do teto de proposito: acima dele a conta satura
+    // e o crescimento some, que e o bug que FONT_MAX_CQW documenta.
     const text = "VOCE NAO VAI PASSAR";
-    const small = estimateFontCqw(bubble, page, text);
-    const big = estimateFontCqw({ ...bubble, w: 600, h: 240 }, page, text);
+    const small = estimateFontCqw({ x: 100, y: 200, w: 180, h: 60 }, page, text);
+    const big = estimateFontCqw({ x: 100, y: 200, w: 225, h: 75 }, page, text);
     assert.ok(big > small, `esperava ${big} > ${small}`);
   });
 
   it("nao deixa uma linha mais alta que o balao", () => {
-    // Uma linha de 6cqw de altura nao cabe numa caixa de 6cqw: sobra a entrelinha.
-    const low = { x: 0, y: 0, w: 900, h: 60 };
+    // Uma linha nunca cabe inteira numa caixa da propria altura: sobra a entrelinha.
+    const low = { x: 0, y: 0, w: 900, h: 36 };
+    const heightCqw = (low.h * 100) / page.width;
     const size = estimateFontCqw(low, page, "!");
-    assert.ok(size < FONT_MAX_CQW, `esperava menos que o teto, veio ${size}`);
-    assert.ok(size * 1.15 <= 6, `uma linha de ${size}cqw nao cabe em 6cqw`);
+    assert.ok(size < ESTIMATE_MAX_CQW, `esperava menos que o teto, veio ${size}`);
+    assert.ok(size * 1.15 <= heightCqw, `uma linha de ${size}cqw nao cabe em ${heightCqw}cqw`);
   });
 
   it("nao passa do teto com texto curto em balao grande", () => {
-    assert.equal(estimateFontCqw({ x: 0, y: 0, w: 900, h: 900 }, page, "!"), FONT_MAX_CQW);
+    assert.equal(estimateFontCqw({ x: 0, y: 0, w: 900, h: 900 }, page, "!"), ESTIMATE_MAX_CQW);
   });
 
   it("nao passa do piso com texto longo em balao pequeno", () => {
@@ -88,7 +96,135 @@ describe("estimateFontCqw", () => {
   });
 
   it("trata texto vazio sem dividir por zero", () => {
-    assert.equal(estimateFontCqw(bubble, page, ""), FONT_MAX_CQW);
+    assert.equal(estimateFontCqw(bubble, page, ""), ESTIMATE_MAX_CQW);
+  });
+});
+
+describe("fontCqw", () => {
+  const bubble = { x: 100, y: 200, w: 300, h: 120 };
+
+  it("usa o corpo medido no lugar da estimativa", () => {
+    // 30px numa pagina de 1000 e 3cqw. A estimativa para a mesma caixa satura no
+    // teto dela; o valor medido nao depende do tamanho do balao.
+    const measured = fontCqw({ bbox: bubble, page, text: "OI", sourceFontPx: 30 });
+    assert.equal(measured, 3 * SOURCE_FONT_RATIO);
+    assert.notEqual(measured, estimateFontCqw(bubble, page, "OI"));
+  });
+
+  it("cai na estimativa sem corpo medido", () => {
+    for (const missing of [undefined, null, 0]) {
+      assert.equal(
+        fontCqw({ bbox: bubble, page, text: "UM TEXTO", sourceFontPx: missing }),
+        estimateFontCqw(bubble, page, "UM TEXTO"),
+        `sourceFontPx=${missing}`,
+      );
+    }
+  });
+
+  it("nao desce do piso nem sobe do teto", () => {
+    const tiny = fontCqw({ bbox: bubble, page, text: "OI", sourceFontPx: 1 });
+    const huge = fontCqw({ bbox: bubble, page, text: "OI", sourceFontPx: 900 });
+    assert.equal(tiny, FONT_FLOOR_CQW);
+    assert.equal(huge, FONT_MAX_CQW);
+  });
+
+  it("escala com a largura da pagina, nao com o pixel", () => {
+    // O invariante de que todo o overlay depende: a mesma pagina em outra
+    // resolucao letra no mesmo corpo relativo.
+    const full = fontCqw({ bbox: bubble, page, text: "OI", sourceFontPx: 40 });
+    const half = fontCqw({
+      bbox: { x: 50, y: 100, w: 150, h: 60 },
+      page: { width: 500, height: 1000 },
+      text: "OI",
+      sourceFontPx: 20,
+    });
+    assert.equal(half, full);
+  });
+});
+
+describe("grownBBox", () => {
+  it("abre a mesma folga dos dois lados", () => {
+    // 2.5% de 200 e 5px, e a folga sai proporcional a largura em ambos os eixos:
+    // e a largura que diz o tamanho do glifo, nao a altura da linha.
+    assert.deepEqual(grownBBox({ x: 100, y: 50, w: 200, h: 40 }), {
+      x: 95,
+      y: 45,
+      w: 210,
+      h: 50,
+    });
+  });
+
+  it("nao empurra a caixa para fora da pagina", () => {
+    // Recortar a folga em vez de aceitar coordenada negativa: a borda esquerda
+    // para em zero e a direita continua com a folga inteira.
+    const grown = grownBBox({ x: 2, y: 0, w: 200, h: 40 });
+    assert.equal(grown.x, 0);
+    assert.equal(grown.y, 0);
+    assert.equal(grown.x + grown.w, 207);
+    assert.equal(grown.y + grown.h, 45);
+  });
+
+  it("aceita a folga como parametro", () => {
+    assert.deepEqual(grownBBox({ x: 100, y: 100, w: 100, h: 100 }, 0.1), {
+      x: 90,
+      y: 90,
+      w: 120,
+      h: 120,
+    });
+  });
+});
+
+describe("overlayBox", () => {
+  const bbox = { x: 100, y: 200, w: 300, h: 120 };
+  const text_bbox = { x: 160, y: 230, w: 180, h: 60 };
+
+  it("cai no balao inteiro sem caixa de texto", () => {
+    const box = overlayBox({ bbox }, page);
+    assert.deepEqual(box, { left: 10, top: 10, width: 30, height: 6, limit: 6, minWidth: 0 });
+  });
+
+  it("toma a largura do balao e a faixa vertical do texto", () => {
+    // O texto medido ocupa 180x60 a partir de (160, 230); com a folga de 2.5% da
+    // largura ele vira 190x70 a partir de (155, 225).
+    const box = overlayBox({ bbox, text_bbox }, page);
+
+    assert.equal(box.left, 10, "a esquerda continua a do balao");
+    assert.equal(box.width, 30, "a largura continua a do balao");
+    assert.equal(box.top, 11.25, "o topo vem da faixa de texto");
+    assert.equal(box.height, 3.5, "a altura vem da faixa de texto");
+  });
+
+  it("mede o crescimento contra o balao, nao contra a faixa de texto", () => {
+    assert.equal(overlayBox({ bbox, text_bbox }, page).limit, 6);
+  });
+
+  it("exige do branco a largura do texto original", () => {
+    // 190 de 300 da 63.3%: e o quanto do balao o ingles ocupava, e o branco nao
+    // pode encolher mais que isso sem deixar a fala original aparecendo.
+    assert.equal(overlayBox({ bbox, text_bbox }, page).minWidth, (190 * 100) / 300);
+  });
+
+  it("nao pede branco mais largo que o balao", () => {
+    // Texto medido mais largo que o proprio balao acontece quando a deteccao
+    // aperta a bbox; 100% e o maximo que o filho pode ocupar da ancora.
+    const wide = { bbox, text_bbox: { x: 100, y: 230, w: 400, h: 60 } };
+    assert.equal(overlayBox(wide, page).minWidth, 100);
+  });
+
+  it("atravessa a emenda quando a fala continua na fatia seguinte", () => {
+    // A fala comeca em y=1900 de uma pagina de 2000 e sobra 300px na seguinte: a
+    // caixa mede os 100px que cabem mais os 300 que passam, em porcentagem desta
+    // pagina.
+    const cut = { bbox: { x: 100, y: 1900, w: 300, h: 100 }, overflow_bottom: 300 };
+    const box = overlayBox(cut, page);
+
+    assert.equal(box.top, 95);
+    assert.equal(box.height, 20, "5% que cabem mais 15% que passam");
+    assert.equal(box.limit, 20, "a fonte pode crescer nos dois pedacos");
+  });
+
+  it("nao muda nada quando a fala nao foi cortada", () => {
+    assert.deepEqual(overlayBox({ bbox, overflow_bottom: 0 }, page), overlayBox({ bbox }, page));
   });
 });
 

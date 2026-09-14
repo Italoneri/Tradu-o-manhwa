@@ -12,7 +12,6 @@ do Windows, que nao enxerga o venv do projeto.
 from __future__ import annotations
 
 import http.server
-import socketserver
 from http import HTTPStatus
 from pathlib import Path
 from urllib.parse import unquote
@@ -74,8 +73,29 @@ def make_handler(root: Path) -> type[ReaderHandler]:
     return RootedReaderHandler
 
 
-def serve_reader(root: Path, port: int) -> None:
-    """Bloqueia servindo `root` na porta, ate KeyboardInterrupt."""
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("0.0.0.0", port), make_handler(root)) as httpd:
+class _Server(http.server.ThreadingHTTPServer):
+    """Uma thread por conexao.
+
+    O servidor de uma conexao por vez basta para servir arquivo, mas nao para o
+    painel: um job de traducao leva minutos e, com o servidor bloqueado, o
+    navegador nao consegue nem buscar o progresso nem carregar a pagina - a tela
+    congela e parece que travou.
+    """
+
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+def serve_handler(handler: type[http.server.BaseHTTPRequestHandler], port: int) -> None:
+    """Bloqueia servindo com `handler` na porta, ate KeyboardInterrupt."""
+    with _Server(("0.0.0.0", port), handler) as httpd:
         httpd.serve_forever()
+
+
+def serve_reader(root: Path, port: int) -> None:
+    """Bloqueia servindo `root` na porta, ate KeyboardInterrupt.
+
+    Somente leitura: e o que o `scripts/serve.py` sobe no python do Windows, sem
+    venv. O painel entra por outro caminho, em `panel.py`.
+    """
+    serve_handler(make_handler(root), port)

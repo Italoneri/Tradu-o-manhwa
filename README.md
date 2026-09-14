@@ -159,6 +159,29 @@ poucos pixels põe tinta em toda linha da página e apagaria as calhas entre pai
 Se você já tem as imagens dentro de `library/`, o `process` fatia sozinho e guarda os
 originais em `library/<serie>/<cap>/_source/`. Rodar de novo não refatia nada.
 
+### Quando a origem já cortou a fala
+
+Nada disso vale se as páginas chegam já fatiadas do site — aí quem escolheu onde
+cortar não foi este projeto, e a escolha pode ter caído no meio de uma fala. O
+detector roda por página e nunca vê as duas metades juntas: medido na emenda entre
+`p0001` e `p0002` de um capítulo real, ele não acha nada acima do corte e lê
+`"my Collen Eyes activated..."` abaixo dele — metade da frase, com a outra metade
+visível na arte, em inglês, do lado de fora da caixa branca.
+
+O `process` faz uma segunda passada nas emendas: monta uma faixa com o pé de uma
+página e a cabeça da seguinte, e detecta ali. Na mesma emenda a leitura passa a ser
+`"Just in case, I kept my Golden Eyes activated..."`, e o bloco fica registrado na
+página onde começa, com `overflow_bottom` dizendo quanto dele segue na próxima — o
+leitor estica a caixa branca através da emenda.
+
+A passada não é gratuita, então ela só roda onde há sinal de corte: algum bloco
+encostado na borda compartilhada. Medido no mesmo capítulo, 26 das 154 emendas.
+
+A faixa nem sempre lê melhor, e por isso a costura só é aceita quando o texto dela
+não é mais curto que o das metades que ela substituiria. Sem essa trava, uma emenda
+medida trocava a frase inteira que a página já tinha lido por um trecho dela.
+`seam_band` em `[detect]` controla a fração de cada página que entra na faixa.
+
 ---
 
 ## Uso
@@ -337,27 +360,37 @@ linha de menos tinta que o corte escolheu — invisível no pixel. Cada fatia é
 sobreposta em 1px sobre a anterior, senão o arredondamento da altura em escala abre
 uma linha de fundo entre elas.
 
-A fala traduzida é escrita **dentro do balão**, numa caixa branca posicionada pela
-`bbox`. Tudo em unidade relativa: a posição em porcentagem da fatia, o tamanho da
-fonte em `cqw` (fração da largura da tira). Por isso o overlay acompanha qualquer
-largura de tela sem recalcular nada — 998px de origem viram 430px no celular e as
-coordenadas continuam certas.
+A fala traduzida é escrita **dentro do balão**, numa caixa branca do tamanho do
+texto original — não do balão. O OCR guarda duas medidas por fala: `text_bbox`, a
+união das caixas de palavra que o Tesseract leu, e `source_font_px`, a mediana da
+altura delas. A primeira diz onde o branco precisa cobrir; a segunda, em que corpo
+a página foi letrada. Sem elas o leitor só conseguia estimar a partir do balão, e
+balão grande não significa texto grande.
+
+Tudo em unidade relativa: a posição em porcentagem da fatia, o tamanho da fonte em
+`cqw` (fração da largura da tira). Por isso o overlay acompanha qualquer largura de
+tela sem recalcular nada — 998px de origem viram 430px no celular e as coordenadas
+continuam certas.
 
 O botão **tradução** liga e desliga o overlay, e o estado fica guardado. Desligado,
 a arte aparece intacta.
 
 ### Três limites conhecidos
 
-**Não há inpainting.** A caixa é branca e retangular, e o contorno do balão
-desaparece debaixo dela. Funciona porque a detecção só aceita balão de interior
-claro (`min_interior_brightness`), então o branco encosta na cor que já estava lá —
-mas num balão colorido ou em SFX a caixa fica visível.
+**Não há inpainting.** A caixa é branca e retangular. Ela cobre só a região do
+texto original, então o contorno do balão sobrevive — medido neste capítulo, a bbox
+do balão tem 4,3x a área do texto na mediana, e era tudo isso que a caixa pintava
+antes. Funciona porque a detecção só aceita balão de interior claro
+(`min_interior_brightness`), então o branco encosta na cor que já estava lá — mas
+num balão colorido ou em SFX a caixa continua visível.
 
 **O português é mais longo que o inglês.** Quando a fala não cabe, a fonte encolhe
 até o piso de legibilidade (`FONT_FLOOR_CQW`, ~28px na resolução de origem) e a
-partir dali **a caixa cresce** em vez de cortar o texto. Medido neste capítulo, o
-pior caso cresceu 1,63x da altura do balão. Perder um pedaço de arte é melhor que
-perder metade da fala; se preferir o contrário, baixe o piso em `reader/overlay.js`.
+partir dali **a caixa cresce** em vez de cortar o texto. Medido neste capítulo: das
+88 falas, 13 encolhem, 3 chegam ao piso, 2 fazem a caixa crescer e o pior caso
+passa 1,37x da altura do balão. Nenhuma foi cortada. Perder um pedaço de arte é
+melhor que perder metade da fala; se preferir o contrário, baixe o piso em
+`reader/overlay.js`.
 
 **A bbox às vezes é do painel, não do balão.** Quando isso acontece a caixa branca
 tapa arte. O botão de tradução é a saída.

@@ -29,8 +29,16 @@ from .models import (
     ExtractedPage,
     Extraction,
 )
-from .ocr import is_usable, read_block
+from .ocr import BlockReading, is_usable, read_block
 from .ordering import reading_order
+from .seams import (
+    band_bbox_to_page,
+    band_heights,
+    covered_by_seam,
+    improves_on,
+    touches_bottom,
+    touches_top,
+)
 from .slicing import slice_chapter_in_place
 from .store import (
     chapter_output_dir,
@@ -76,8 +84,8 @@ def _read_image(path: Path) -> np.ndarray:
 
 
 def _drop_repeated_readings(
-    readings: list[tuple[Detection, str, float]],
-) -> tuple[list[tuple[Detection, str, float]], list[BBox]]:
+    readings: list[tuple[Detection, BlockReading]],
+) -> tuple[list[tuple[Detection, BlockReading]], list[BBox]]:
     """Remove o mesmo texto lido duas vezes na mesma pagina.
 
     Um balao dentro de um painel branco produz duas caixas: a do balao e a do
@@ -89,24 +97,25 @@ def _drop_repeated_readings(
     baloes distintos ("...", "NAO!") nao se cruzam. Entre as duas, fica a caixa
     menor, que e a do balao e nao a do painel - e a que a Fase 2 precisa.
     """
-    kept: list[tuple[Detection, str, float]] = []
+    kept: list[tuple[Detection, BlockReading]] = []
     removed: list[BBox] = []
 
-    for detection, text, confidence in readings:
+    for detection, reading in readings:
         twin = next(
             (
                 index
-                for index, (other, other_text, _) in enumerate(kept)
-                if other_text == text and other.bbox.intersection_area(detection.bbox) > 0
+                for index, (other, other_reading) in enumerate(kept)
+                if other_reading.text == reading.text
+                and other.bbox.intersection_area(detection.bbox) > 0
             ),
             None,
         )
         if twin is None:
-            kept.append((detection, text, confidence))
+            kept.append((detection, reading))
             continue
         if detection.bbox.area < kept[twin][0].bbox.area:
             removed.append(kept[twin][0].bbox)
-            kept[twin] = (detection, text, confidence)
+            kept[twin] = (detection, reading)
         else:
             removed.append(detection.bbox)
 
@@ -127,30 +136,32 @@ def _extract_page(
     )
     ordered = [detections[position] for position in order]
 
-    readings: list[tuple[Detection, str, float]] = []
+    readings: list[tuple[Detection, BlockReading]] = []
     dropped: list[BBox] = []
     for detection in ordered:
         # O recorte do texto, nao o do balao: o contorno que sobra em volta faz o
         # Tesseract ler a borda como glifo.
-        text, confidence = read_block(image, detection.text_bbox, cfg.ocr)
-        if not is_usable(text, confidence, cfg.ocr):
+        reading = read_block(image, detection.text_bbox, cfg.ocr)
+        if not is_usable(reading.text, reading.confidence, cfg.ocr):
             dropped.append(detection.bbox)
             continue
-        readings.append((detection, text, confidence))
+        readings.append((detection, reading))
 
     readings, duplicates = _drop_repeated_readings(readings)
     dropped.extend(duplicates)
 
-    kept = [detection for detection, _, _ in readings]
+    kept = [detection for detection, _ in readings]
     blocks = [
         ExtractedBlock(
             id=f"p{index:03d}-b{position:02d}",
             bbox=detection.bbox,
-            raw_text=text,
-            confidence=confidence,
+            raw_text=reading.text,
+            confidence=reading.confidence,
             kind=detection.kind,
+            text_bbox=reading.text_bbox,
+            source_font_px=reading.source_font_px,
         )
-        for position, (detection, text, confidence) in enumerate(readings, start=1)
+        for position, (detection, reading) in enumerate(readings, start=1)
     ]
 
     if debug_dir is not None:
@@ -165,6 +176,124 @@ def _extract_page(
         image_sha256=image_sha256(path),
         blocks=tuple(blocks),
     )
+
+
+def _stitch_seam(
+    cfg: Config,
+    detector: Detector,
+    upper: ExtractedPage,
+    lower: ExtractedPage,
+    *,
+    upper_image: np.ndarray,
+    lower_image: np.ndarray,
+) -> tuple[ExtractedPage, ExtractedPage]:
+    """Reune numa fala so o que a emenda entre duas paginas cortou em duas.
+
+    A deteccao roda numa faixa montada com o pe de uma pagina e a cabeca da outra,
+    entao o detector ve a fala inteira. Os filtros de area do backend `heuristic`
+    sao proporcionais a area da imagem e a faixa e menor que uma pagina, o que
+    empurra as razoes para cima - na pratica na direcao segura, porque o que estava
+    perto do minimo passa a caber com folga.
+    """
+    upper_take, lower_take = band_heights(upper.height, lower.height, cfg.detect.seam_band)
+    band = np.vstack([upper_image[upper.height - upper_take :], lower_image[:lower_take]])
+
+    def covered(bbox: BBox, overflow: int) -> list[ExtractedBlock]:
+        return [
+            block
+            for blocks, on_lower in ((upper.blocks, False), (lower.blocks, True))
+            for block in blocks
+            if covered_by_seam(
+                block.bbox, bbox, overflow=overflow, page_height=upper.height, on_lower=on_lower
+            )
+        ]
+
+    stitched: list[ExtractedBlock] = []
+    replaced: set[str] = set()
+    for detection in detector.detect(band):
+        mapped = band_bbox_to_page(detection.bbox, upper_take=upper_take, upper_height=upper.height)
+        if mapped is None:
+            continue
+
+        reading = read_block(band, detection.text_bbox, cfg.ocr)
+        if not is_usable(reading.text, reading.confidence, cfg.ocr):
+            continue
+
+        bbox, overflow = mapped
+        halves = covered(bbox, overflow)
+        if not improves_on(reading.text, [block.raw_text for block in halves]):
+            log.info(
+                "operation=stitch_seam upper=%d lower=%d descartada=%r",
+                upper.index,
+                lower.index,
+                reading.text[:40],
+            )
+            continue
+
+        stitched.append(
+            ExtractedBlock(
+                id=f"p{upper.index:03d}-s{len(stitched) + 1:02d}",
+                bbox=bbox,
+                raw_text=reading.text,
+                confidence=reading.confidence,
+                kind=detection.kind,
+                # `text_bbox` fica de fora de proposito: ela sairia em coordenada
+                # da faixa, e mapea-la pediria um segundo campo de transbordo so
+                # para ela. Sem ela o leitor pinta o balao inteiro, que numa fala
+                # cortada e o que cobre as duas metades.
+                source_font_px=reading.source_font_px,
+                overflow_bottom=overflow,
+            )
+        )
+        replaced.update(block.id for block in halves)
+
+    if not stitched:
+        return upper, lower
+
+    log.info(
+        "operation=stitch_seam upper=%d lower=%d falas=%d substituidas=%d",
+        upper.index,
+        lower.index,
+        len(stitched),
+        len(replaced),
+    )
+
+    kept_upper = [block for block in upper.blocks if block.id not in replaced]
+    kept_upper.extend(stitched)
+    order = reading_order(
+        [block.bbox for block in kept_upper],
+        band_overlap=cfg.reading_order.band_overlap,
+        rtl=cfg.reading_order.rtl,
+    )
+
+    return (
+        upper.model_copy(update={"blocks": tuple(kept_upper[position] for position in order)}),
+        lower.model_copy(
+            update={"blocks": tuple(b for b in lower.blocks if b.id not in replaced)}
+        ),
+    )
+
+
+def _seam_candidates(pages: Sequence[ExtractedPage], fresh: set[int]) -> list[int]:
+    """Indices das emendas que valem uma deteccao a mais.
+
+    O sinal de corte e bloco encostado na borda compartilhada, de um lado ou do
+    outro. Medido em manhwa/001, 26 das 154 emendas - nas outras 128 a faixa nao
+    acharia nada e a deteccao seria paga de graca.
+
+    Emenda entre duas paginas reaproveitadas do cache tambem e pulada: o bloco de
+    emenda ficou salvo na pagina de cima e veio junto com ela.
+    """
+    candidates = []
+    for index, (upper, lower) in enumerate(zip(pages, pages[1:], strict=False)):
+        if upper.index not in fresh and lower.index not in fresh:
+            continue
+        cut = any(touches_bottom(block.bbox, upper.height) for block in upper.blocks) or any(
+            touches_top(block.bbox) for block in lower.blocks
+        )
+        if cut:
+            candidates.append(index)
+    return candidates
 
 
 def extract_chapter(
@@ -196,6 +325,7 @@ def extract_chapter(
     log.info("operation=extract_chapter detector=%s pages=%d", detector.name, len(images))
 
     pages: list[ExtractedPage] = []
+    fresh: set[int] = set()
     reused = 0
     for index, path in enumerate(images, start=1):
         cached = previous.page_by_image(path.name) if previous else None
@@ -205,6 +335,19 @@ def extract_chapter(
             continue
         log.info("operation=extract_page page=%d image=%s", index, path.name)
         pages.append(_extract_page(cfg, detector, path, index, debug_dir=debug_dir))
+        fresh.add(index)
+
+    # Depois das paginas, e nao junto: a emenda precisa das duas ja detectadas
+    # para saber se ha sinal de corte antes de pagar uma deteccao a mais.
+    for position in _seam_candidates(pages, fresh):
+        pages[position], pages[position + 1] = _stitch_seam(
+            cfg,
+            detector,
+            pages[position],
+            pages[position + 1],
+            upper_image=_read_image(images[position]),
+            lower_image=_read_image(images[position + 1]),
+        )
 
     extraction = Extraction(
         series=series,

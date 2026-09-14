@@ -3,20 +3,21 @@ from __future__ import annotations
 import pytest
 
 from .models import BBox, Detection
+from .ocr import BlockReading
 from .pipeline import _drop_repeated_readings
 
 
 def reading(x: int, y: int, w: int, h: int, text: str, confidence: float = 90.0):
     box = BBox(x=x, y=y, w=w, h=h)
-    return (Detection(bbox=box, text_bbox=box), text, confidence)
+    return (Detection(bbox=box, text_bbox=box), BlockReading(text, confidence))
 
 
 def texts(readings) -> list[str]:
-    return [text for _, text, _ in readings]
+    return [block.text for _, block in readings]
 
 
 def boxes(readings) -> list[BBox]:
-    return [detection.bbox for detection, _, _ in readings]
+    return [detection.bbox for detection, _ in readings]
 
 
 def test_keeps_a_single_reading_untouched():

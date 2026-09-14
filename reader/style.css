@@ -1,45 +1,43 @@
+/* Tokens do Nocturne. O design e dark-only e o leitor adota assim: a rampa
+   clara equivalente nao foi desenhada, e inventar uma daria pior que nao ter. */
 :root {
-  --bg: #f6f5f3;
-  --surface: #ffffff;
-  --surface-2: #edebe7;
-  --ink: #1b1d21;
-  --ink-soft: #5d626c;
-  --ink-faint: #8b909b;
-  --line: #dedbd5;
-  --accent: #b3541e;
-  --accent-soft: #f3e3d8;
-  --radius: 10px;
+  --bg: #161826;
+  --surface: #232532;
+  --ink: #e9e9ed;
+  --line: color-mix(in srgb, #e9e9ed 16%, transparent);
+
+  --n-500: #9397ab;
+  --n-600: #75798c;
+  --n-700: #595d6c;
+  --n-800: #3f424d;
+  --n-900: #292b31;
+
+  --accent: #9184d9;
+  --accent-300: #d2cefd;
+  --accent-600: #796cbf;
+  --accent-700: #5d5294;
+  --accent-800: #423a6a;
+  --accent-900: #2b2741;
+
+  --space-1: 2.8px;
+  --space-2: 5.6px;
+  --space-3: 8.4px;
+  --space-4: 11.2px;
+  --space-6: 16.8px;
+  --space-8: 22.4px;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+
+  --shadow-sm: 0 0 0 1px var(--n-800);
+
+  /* A Inter nao vem de CDN de proposito: o leitor e uma PWA servida no Wi-Fi de
+     casa e roda offline, entao um @import do Google Fonts quebra offline e vaza
+     um request por abertura. Usa a Inter se a maquina tiver, cai no sistema se nao. */
+  --font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
   --bar-h: 52px;
   --pager-h: 56px;
-  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #111318;
-    --surface: #191c22;
-    --surface-2: #22262e;
-    --ink: #e9eaee;
-    --ink-soft: #a6acb8;
-    --ink-faint: #767d8a;
-    --line: #2c313a;
-    --accent: #e08a4c;
-    --accent-soft: #33261c;
-    color-scheme: dark;
-  }
-}
-
-:root[data-theme="dark"] {
-  --bg: #111318;
-  --surface: #191c22;
-  --surface-2: #22262e;
-  --ink: #e9eaee;
-  --ink-soft: #a6acb8;
-  --ink-faint: #767d8a;
-  --line: #2c313a;
-  --accent: #e08a4c;
-  --accent-soft: #33261c;
   color-scheme: dark;
 }
 
@@ -61,117 +59,233 @@ body {
   -webkit-text-size-adjust: 100%;
 }
 
+::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--n-800); border-radius: 8px; }
+
 /* ---------- barra ---------- */
 
 .bar {
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: 20;
   display: flex;
-  align-items: center;
-  gap: 12px;
-  height: var(--bar-h);
-  padding: 0 14px;
-  padding-top: env(safe-area-inset-top);
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  flex-direction: column;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--line);
+  padding-top: env(safe-area-inset-top);
 }
 
-.bar .back {
+.bar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-height: var(--bar-h);
+  padding: var(--space-3) var(--space-6);
+  max-width: 1180px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.brand { display: flex; align-items: center; gap: var(--space-3); flex: none; }
+.brand .mark {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent);
+  box-shadow: inset 0 0 10px var(--accent-800);
+}
+.brand .name {
+  font-weight: 500;
+  font-size: 17px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.back {
   flex: none;
-  width: 32px;
-  height: 32px;
-  display: grid;
-  place-items: center;
-  border-radius: 8px;
-  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-1);
+  border-radius: var(--radius-md);
+  color: var(--accent);
   text-decoration: none;
-  font-size: 18px;
+  font-size: 13px;
 }
-.bar .back:hover { background: var(--surface-2); }
+.back:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.back svg { display: block; }
 
-.title { min-width: 0; flex: 1; display: flex; flex-direction: column; justify-content: center; }
-.title strong { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.title span { font-size: 12px; color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.title { min-width: 0; flex: 1; }
+.title strong { display: block; font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.title span { display: block; font-size: 12px; color: var(--n-500); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.controls { display: flex; align-items: center; gap: 8px; flex: none; }
+.search {
+  flex: 1 1 220px;
+  min-width: 0;
+  max-width: 380px;
+  padding: 8px var(--space-4);
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  caret-color: var(--accent);
+  background: var(--surface);
+  border: 1px solid var(--n-800);
+  border-radius: var(--radius-md);
+}
+.search::placeholder { color: var(--n-600); }
+.search:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-900);
+}
 
-.engine { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-faint); }
+.controls { display: flex; align-items: center; gap: var(--space-4); flex: none; margin-left: auto; }
+
+.engine { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--n-500); }
 .engine select {
   font: inherit;
   font-size: 12px;
   color: var(--ink);
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: 7px;
+  background: var(--surface);
+  border: 1px solid var(--n-800);
+  border-radius: var(--radius-sm);
   padding: 4px 6px;
 }
 
-.ghost {
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   font: inherit;
   font-size: 13px;
-  color: var(--ink-soft);
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 6px 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--ink);
+  /* O rodape de fim de capitulo usa <a class="btn">, que sem isto sai sublinhado. */
+  text-decoration: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) calc(var(--space-3) * 1.2);
   cursor: pointer;
 }
-.ghost:hover { color: var(--ink); border-color: var(--ink-faint); }
-.ghost[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
-.ghost:disabled { opacity: 0.35; cursor: default; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-primary { color: var(--accent); border-color: var(--accent); }
+.btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.btn-secondary { border-color: var(--line); }
+.btn-secondary:hover:not(:disabled) { background: color-mix(in srgb, var(--ink) 7%, transparent); }
+.btn-ghost { color: var(--n-500); }
+.btn-ghost:hover:not(:disabled) { background: color-mix(in srgb, var(--ink) 7%, transparent); color: var(--ink); }
+/* O toggle ligado e o estado normal de leitura, entao ele acende em vez de apagar. */
+.btn-ghost[aria-pressed="true"] { color: var(--accent-300); background: var(--accent-900); border-color: var(--accent-700); }
 
-/* ---------- biblioteca ---------- */
-
-main { padding: 20px 16px 40px; max-width: 1100px; margin: 0 auto; }
-
-.empty { color: var(--ink-faint); text-align: center; padding: 48px 16px; }
-.empty code { background: var(--surface-2); padding: 2px 6px; border-radius: 5px; font-size: 13px; }
-
-.series { margin-bottom: 32px; }
-.series h2 {
-  margin: 0 0 12px;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
+/* A barra de progresso acompanha o scroll do capitulo e some nas outras telas. */
+.progress-track { height: 2px; background: var(--n-900); }
+.progress-fill {
+  height: 2px;
+  width: 0;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-600);
 }
 
-.chapters { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+/* ---------- telas de lista ---------- */
 
-.chapter {
-  display: block;
-  padding: 14px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
+main { padding: var(--space-8) var(--space-8) 64px; max-width: 1180px; margin: 0 auto; }
+
+.empty { color: var(--n-500); text-align: center; padding: 64px var(--space-6); }
+.empty code { background: var(--surface); padding: 2px 6px; border-radius: var(--radius-sm); font-size: 13px; }
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-6);
+  margin-bottom: var(--space-8);
+}
+.head h1 { margin: 0 0 var(--space-2); font-weight: 500; font-size: 30px; letter-spacing: -0.01em; }
+.head p { margin: 0; color: var(--n-500); font-size: 14px; }
+.head .count { flex: none; color: var(--n-600); font-size: 13px; }
+
+.shelf { display: grid; grid-template-columns: repeat(auto-fill, minmax(152px, 1fr)); gap: var(--space-8) var(--space-6); }
+
+.work {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
   color: inherit;
   text-decoration: none;
 }
-.chapter:hover { border-color: var(--accent); }
-.chapter strong { display: block; font-size: 15px; font-weight: 600; }
-.chapter span { font-size: 12px; color: var(--ink-faint); }
-.chapter .tags { margin-top: 8px; display: flex; gap: 5px; flex-wrap: wrap; }
-.chapter .tag {
-  font-size: 10px;
-  letter-spacing: 0.05em;
+.work:hover { opacity: 0.82; }
+.work h2 { margin: 0 0 2px; font-weight: 500; font-size: 14px; }
+.work p { margin: 0; color: var(--n-500); font-size: 12px; }
+
+.cover {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  background: var(--n-900);
+}
+.cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
+
+/* Sem capa a carta nao pode virar um buraco: a inicial da obra segura o lugar. */
+.cover-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  background: linear-gradient(160deg, var(--accent-900), var(--n-900));
+  color: var(--accent-700);
+  font-size: 42px;
+  font-weight: 500;
   text-transform: uppercase;
-  padding: 2px 6px;
-  border-radius: 5px;
-  background: var(--surface-2);
-  color: var(--ink-faint);
+}
+
+/* ---------- lista de capitulos ---------- */
+
+.chapters { display: flex; flex-direction: column; gap: var(--space-2); }
+
+.chapter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-6);
+  background: var(--surface);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: inherit;
+  text-decoration: none;
+}
+.chapter:hover { border-color: var(--accent-700); }
+.chapter strong { font-weight: 500; font-size: 15px; }
+.chapter .pages { color: var(--n-500); font-size: 13px; margin-left: auto; }
+.chapter .tags { display: flex; gap: var(--space-2); }
+.tag {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 3px 10px;
+  border-radius: 6px;
+  background: var(--n-800);
+  color: var(--n-500);
 }
 
 /* ---------- leitor: tira continua ---------- */
 
-/* A tira vai de borda a borda no celular - 16px de cada lado custam 7% da
+.reading { max-width: 760px; }
+
+/* A tira vai de borda a borda no celular - 22.4px de cada lado custam 10% da
    largura da arte - e ganha cantos arredondados quando sobra espaco. */
 .strip {
   position: relative;
-  margin-inline: -16px;
-  background: var(--surface-2);
+  margin-inline: calc(var(--space-8) * -1);
+  background: var(--n-900);
   /* Container das bolhas. Fica aqui e nao na fatia porque `container-type` traz
      containment de layout, que faz da fatia um contexto de empilhamento - e uma
      bolha que cresceu para fora da fatia ficaria presa debaixo da fatia
@@ -180,7 +294,7 @@ main { padding: 20px 16px 40px; max-width: 1100px; margin: 0 auto; }
 }
 
 @media (min-width: 640px) {
-  .strip { margin-inline: 0; border-radius: var(--radius); overflow: hidden; }
+  .strip { margin-inline: 0; border-radius: var(--radius-sm); overflow: hidden; }
 }
 
 .slice {
@@ -194,24 +308,28 @@ main { padding: 20px 16px 40px; max-width: 1100px; margin: 0 auto; }
    que o fatiamento escolheu por ser a de menos tinta da pagina. */
 .slice + .slice { margin-top: -1px; }
 
+/* width/height reais vem do JSON e seguram o espaco antes da imagem carregar. O
+   aspect-ratio 2/3 do mockup nao serve aqui: a fatia de manhwa e muito mais alta
+   que isso, e forcar a proporcao esmagaria a arte. */
 .slice img { display: block; width: 100%; height: auto; }
 
+/* A bolha e so ancora de posicao: nao pinta nada. `min-height` na altura da bbox
+   e o que centra o filho no meio do balao - que e onde o texto original esta - e
+   o que deixa a ancora crescer quando a fala traduzida nao cabe. Recortar perderia
+   parte da fala, e `--size` ja desceu ate o piso de legibilidade antes disso. */
 .bubble {
   position: absolute;
   /* Acima das imagens de todas as fatias, nao so da propria: a caixa que cresceu
      passa da borda da fatia e tem de aparecer sobre a arte da seguinte. */
   z-index: 1;
   display: grid;
+  /* A trilha nao pode ser `auto`: ela seria dimensionada pelo max-content do filho
+     e o `max-width: 100%` dele passaria a medir contra ela mesma, nao contra a
+     bbox. Medido na fala longa da fatia 25, o branco saia com 427px numa bbox de
+     206px, em uma linha so, por cima do painel vizinho. */
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
-  /* Altura automatica com piso na bbox: a caixa cobre o balao original e cresce
-     quando a fala traduzida nao cabe nele. Recortar perderia parte da fala, e
-     `--size` ja desceu ate o piso de legibilidade antes disso acontecer. */
   min-height: var(--h);
-  border-radius: 8px;
-  /* O branco se estende 2px para fora: a borda reta da caixa encosta no interior
-     do balao, que a deteccao garante claro, em vez de cortar a arte em angulo. */
-  box-shadow: 0 0 0 2px #fff;
-  background: #fff;
   color: #111;
   font-size: calc(var(--size) * 1cqw);
   font-weight: 600;
@@ -220,41 +338,91 @@ main { padding: 20px 16px 40px; max-width: 1100px; margin: 0 auto; }
   text-transform: uppercase;
 }
 
-.bubble .t { padding: 2% 4%; hyphens: auto; overflow-wrap: break-word; }
+/* O branco acompanha o texto, nao a bbox. Num balao redondo a bbox e o quadrado
+   circunscrito e o texto ocupa uma fracao dela: pintar o quadrado inteiro apaga o
+   contorno do balao junto.
+   O branco se estende 2px para fora: a borda reta encosta no interior do balao,
+   que a deteccao garante claro, em vez de cortar a arte em angulo. Branco fixo de
+   proposito: e um balao de fala, nao superficie de interface - nao acompanha o tema. */
+.bubble .t {
+  width: max-content;
+  max-width: 100%;
+  min-width: var(--min-w, 0);
+  background: #fff;
+  box-shadow: 0 0 0 2px #fff;
+  /* em, e nao px: o canto acompanha o corpo da fonte, que muda a cada balao. */
+  border-radius: 0.7em;
+  padding: 0.15em 0.5em;
+  hyphens: auto;
+  /* Hifenizar so palavra longa. `hyphens: auto` sozinho parte "ESTAVA" em
+     "ES-TAVA", e num balao estreito a fala vira uma coluna de duas silabas por
+     linha. Travando a palavra curta, quem nao cabe mais transborda em altura e o
+     `fitFontSize` encolhe a fonte - que e o dano menor. Medido nas 88 falas de
+     output/manhwa/001: hifenizadas caem de 7 para 3, nenhum estouro novo e o
+     corpo medio vai de 4.53 para 4.52cqw. As 3 que sobram sao palavra longa de
+     verdade, que precisa partir mesmo. */
+  hyphenate-limit-chars: 8 4 4;
+  overflow-wrap: break-word;
+}
 
 body.hide-overlay .bubble { display: none; }
+
+/* ---------- fim do capitulo ---------- */
+
+.chapter-end {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-6);
+  padding: 56px 0 72px;
+  text-align: center;
+}
+.chapter-end .rule {
+  width: 120px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent-700), transparent);
+}
+.chapter-end p { margin: 0; color: var(--n-500); font-size: 13px; }
+.chapter-end .actions { display: flex; gap: var(--space-4); flex-wrap: wrap; justify-content: center; }
 
 /* ---------- falas sem posicao ---------- */
 
 .orphans {
-  margin-top: 20px;
-  padding: 12px 14px;
+  margin-top: var(--space-8);
+  padding: var(--space-4) var(--space-6);
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
+  border-radius: var(--radius-md);
 }
-.orphans summary { cursor: pointer; font-size: 13px; color: var(--ink-faint); }
-.orphans ol { margin: 12px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
-.orphans li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; }
+.orphans summary { cursor: pointer; font-size: 13px; color: var(--n-500); }
+.orphans ol { margin: var(--space-4) 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--space-3); }
+.orphans li { display: grid; grid-template-columns: 22px 1fr; gap: var(--space-4); }
 .orphans .n { color: var(--accent); font-size: 12px; font-variant-numeric: tabular-nums; padding-top: 1px; }
 .orphans .pt { margin: 0; }
-.orphans .en { margin: 4px 0 0; font-size: 12.5px; color: var(--ink-faint); }
+.orphans .en { margin: var(--space-1) 0 0; font-size: 12.5px; color: var(--n-500); }
 
 /* ---------- paginacao ---------- */
 
 .pager {
   position: sticky;
   bottom: 0;
-  z-index: 10;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-4);
   height: var(--pager-h);
-  padding: 0 14px;
+  padding: 0 var(--space-6);
   padding-bottom: env(safe-area-inset-bottom);
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: blur(10px);
   border-top: 1px solid var(--line);
 }
-.pager span { font-size: 12px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.pager span { font-size: 12px; color: var(--n-500); font-variant-numeric: tabular-nums; }
+
+@media (max-width: 520px) {
+  .bar-row { gap: var(--space-4); padding: var(--space-3) var(--space-4); }
+  main { padding-inline: var(--space-4); }
+  .strip { margin-inline: calc(var(--space-4) * -1); }
+  .head h1 { font-size: 24px; }
+}

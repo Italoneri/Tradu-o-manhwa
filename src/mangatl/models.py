@@ -12,9 +12,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-PIPELINE_VERSION = 2
+PIPELINE_VERSION = 4
 """Sobe quando detect/ocr/ordering mudam de forma que invalida extracoes salvas."""
 
 BlockKind = Literal["bubble", "free"]
@@ -91,6 +91,29 @@ class ExtractedBlock(Frozen):
     kind: BlockKind = "bubble"
     """Com default para o extract.json da versao 1 ainda validar na comparacao."""
 
+    text_bbox: BBox | None = None
+    """Regiao ocupada pelo texto ORIGINAL dentro do balao.
+
+    Diferente de `bbox`, que e o balao inteiro. Num balao redondo a bbox e o
+    quadrado circunscrito e o texto ocupa uma fracao dela - tapar a bbox apaga o
+    contorno do balao sem necessidade. None quando o OCR nao devolveu caixa de
+    palavra."""
+
+    source_font_px: int | None = None
+    """Corpo do letreiramento original, em pixels da pagina.
+
+    Mediana da altura das caixas de palavra do Tesseract. E o unico sinal direto do
+    tamanho em que a pagina foi letrada; sem ele o leitor so consegue estimar a
+    partir do balao, e balao grande nao significa texto grande."""
+
+    overflow_bottom: int = Field(default=0, ge=0)
+    """Quantos pixels da fala passam da base desta pagina e seguem na proxima.
+
+    Uma captura que chega ja fatiada pode ter cortado a fala no meio. Quando isso
+    acontece a fala e uma so, e guarda-la como dois blocos duplicaria a traducao;
+    ela fica na pagina onde comeca e este campo diz quanto sobra para baixo. Zero
+    na esmagadora maioria dos blocos, que cabem na propria pagina."""
+
 
 class ExtractedPage(Frozen):
     index: int = Field(ge=1)
@@ -123,6 +146,29 @@ class TranslatedBlock(Frozen):
     kind: BlockKind = "bubble"
     """O leitor trata os dois diferente: caixa branca so faz sentido dentro de balao."""
 
+    text_bbox: BBox | None = None
+    """Regiao ocupada pelo texto ORIGINAL dentro do balao.
+
+    Diferente de `bbox`, que e o balao inteiro. Num balao redondo a bbox e o
+    quadrado circunscrito e o texto ocupa uma fracao dela - tapar a bbox apaga o
+    contorno do balao sem necessidade. None quando o OCR nao devolveu caixa de
+    palavra."""
+
+    source_font_px: int | None = None
+    """Corpo do letreiramento original, em pixels da pagina.
+
+    Mediana da altura das caixas de palavra do Tesseract. E o unico sinal direto do
+    tamanho em que a pagina foi letrada; sem ele o leitor so consegue estimar a
+    partir do balao, e balao grande nao significa texto grande."""
+
+    overflow_bottom: int = Field(default=0, ge=0)
+    """Quantos pixels da fala passam da base desta pagina e seguem na proxima.
+
+    Uma captura que chega ja fatiada pode ter cortado a fala no meio. Quando isso
+    acontece a fala e uma so, e guarda-la como dois blocos duplicaria a traducao;
+    ela fica na pagina onde comeca e este campo diz quanto sobra para baixo. Zero
+    na esmagadora maioria dos blocos, que cabem na propria pagina."""
+
 
 class TranslatedPage(Frozen):
     index: int = Field(ge=1)
@@ -146,11 +192,55 @@ class ChapterEntry(Frozen):
     chapter: str
     page_count: int
     engines: tuple[str, ...]
+    cover: str | None = None
+    """Caminho servivel da capa, relativo a raiz servida. None quando o capitulo nao tem."""
+
+
+class SeriesMeta(Frozen):
+    """Conteudo de `library/<slug>/series.json`, todo opcional.
+
+    Existe para separar o titulo do nome da pasta. O nome da pasta e o slug: ele e
+    a chave em toda URL e em todo caminho gravado nos JSONs, entao renomear a pasta
+    para corrigir um titulo obrigaria a reprocessar o capitulo inteiro.
+
+    Chave desconhecida e ignorada em vez de recusada, ao contrario do resto dos
+    modelos: este arquivo e editavel na mao, e um typo nele nao pode derrubar a
+    biblioteca inteira na hora de montar o indice.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    title: str = ""
+    """Vazio significa "use o slug"."""
+
+    cover: str | None = None
+    """Nome do arquivo de capa dentro da pasta da serie. Sem ele, vale o `cover.*`
+    que estiver la."""
+
+    status: str = ""
+    """Texto livre: "em andamento", "completo", o que o dono quiser escrever."""
 
 
 class SeriesEntry(Frozen):
     series: str
+    """O slug, que e o nome da pasta."""
+
+    title: str = ""
     chapters: tuple[ChapterEntry, ...]
+    cover: str | None = None
+    """A capa propria da serie, ou a herdada do primeiro capitulo que tiver uma."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _title_defaults_to_the_slug(cls, data: object) -> object:
+        """Sem titulo, o titulo e o slug.
+
+        `library.json` gerado antes deste campo continua validando, e o leitor
+        nunca precisa saber que o default existe.
+        """
+        if isinstance(data, dict) and not data.get("title"):
+            return {**data, "title": data.get("series", "")}
+        return data
 
 
 class Library(Frozen):

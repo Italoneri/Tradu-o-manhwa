@@ -6,8 +6,20 @@
    pagina, e o tamanho da fonte vira `cqw`: 1cqw e 1% da largura da fatia. Com
    isso o overlay acompanha qualquer largura sem recalcular nada no resize. */
 
-export const FONT_MAX_CQW = 6;
-/** ~26px num celular de 430px de largura de fatia. Acima disso a fala grita. */
+export const FONT_MAX_CQW = 8;
+/** Trava de sanidade do corpo medido, nao valor de operacao. Medido em
+    output/manhwa/001 com o corpo ja calibrado: 3 dos 88 blocos encostam nas
+    travas, e os tres sao OCR quebrado - 'wre' e 'NANG' lidos sobre SFX, com caixa
+    de palavra de 150px e 82px numa pagina cujo letreiramento tem 44px. Abaixo de 8
+    ficariam 18, e 15 deles sao dialogo comum: o corpo desta obra da 6.1cqw. */
+
+export const ESTIMATE_MAX_CQW = 4.0;
+/** Teto da estimativa, que e coisa diferente: ela satura e precisa de teto baixo.
+    Medido em output/manhwa/001, 86 dos 88 blocos com bbox saem travados aqui - a
+    conta por area pede 15-18cqw para balao grande com poucos caracteres, porque
+    responde "que fonte preenche a caixa" e nao "que fonte tem o tamanho do
+    letreiramento". So vale para JSON anterior a esta versao do pipeline, que nao
+    traz `source_font_px`. */
 
 export const FONT_FLOOR_CQW = 2.8;
 /** ~12px no mesmo celular, ~28px na resolucao de origem - perto do tamanho em que
@@ -73,7 +85,83 @@ export function estimateFontCqw(bbox, page, text) {
   // 64px para uma faixa de 45px. Uma linha nunca pode ser mais alta que a caixa.
   const byHeight = height / LINE_HEIGHT;
 
-  return clamp(Math.min(byArea, byHeight), FONT_FLOOR_CQW, FONT_MAX_CQW);
+  return clamp(Math.min(byArea, byHeight), FONT_FLOOR_CQW, ESTIMATE_MAX_CQW);
+}
+
+export const SOURCE_FONT_RATIO = 1.39;
+/** Corpo tipografico como multiplo da altura da caixa de palavra do Tesseract.
+    A caixa de palavra e a mancha de tinta, e `font-size` e o corpo: em caixa alta
+    sem acento a tinta ocupa 0.72em, entao pintar no mesmo tamanho pede 1/0.72.
+    Medido nas 88 falas deste capitulo com a Inter 600 do leitor, palavra a palavra:
+    mediana 1.389, com o primeiro e o terceiro quartil no mesmo valor - so as falas
+    com acento maiusculo saem do grupo, porque o acento estica a mancha. */
+
+export const TEXT_MARGIN = 0.025;
+/** Folga em volta do `text_bbox`, como fracao da largura dele. A uniao das caixas
+    de palavra encosta no glifo; sem folga o arredondamento para pixel de tela come
+    serifa na borda. */
+
+/** Corpo da fonte em `cqw`, preferindo o tamanho do letreiramento original.
+ *
+ * `sourceFontPx` vem do OCR: e a mediana da altura das caixas de palavra do texto
+ * original, medida na propria pagina. Convertido em fracao da largura, ele da o
+ * corpo em que a pagina foi letrada - que e o alvo. A estimativa por area so
+ * responde "que fonte preenche a caixa", e para balao grande com pouco texto ela
+ * satura no teto: medido em output/manhwa/001, 86 de 88 blocos.
+ *
+ * Sem `sourceFontPx` (JSON anterior a esta versao do pipeline) cai na estimativa
+ * antiga.
+ */
+export function fontCqw({ bbox, page, text, sourceFontPx }) {
+  if (!sourceFontPx) return estimateFontCqw(bbox, page, text);
+  return clamp(percent(sourceFontPx, page.width) * SOURCE_FONT_RATIO, FONT_FLOOR_CQW, FONT_MAX_CQW);
+}
+
+/** A bbox com uma folga proporcional a largura dela, ainda dentro da pagina. */
+export function grownBBox(bbox, fraction = TEXT_MARGIN) {
+  const margin = Math.round(bbox.w * fraction);
+  const x = Math.max(0, bbox.x - margin);
+  const y = Math.max(0, bbox.y - margin);
+  return { x, y, w: bbox.w + (bbox.x - x) + margin, h: bbox.h + (bbox.y - y) + margin };
+}
+
+/** Onde pintar a traducao, a partir das medidas que o pipeline guardou no bloco.
+ *
+ * Os eixos vem de medidas diferentes porque erram de formas diferentes. Medido nas
+ * 88 falas de output/manhwa/001: na horizontal o texto original esta centrado no
+ * balao - o centro dele desvia 1% da folga na mediana e 5% no terceiro quartil -
+ * entao a largura do balao e a caixa certa, e ela ainda deixa a traducao crescer
+ * quando o portugues sai mais longo que o ingles. Na vertical o desvio chega a 38%
+ * no terceiro quartil, entao ali vale a faixa medida e nao o centro do balao.
+ *
+ * `limit` e sempre a altura do balao: e ate onde a fala pode crescer antes de
+ * tapar arte, e nao tem relacao com onde o branco comeca.
+ *
+ * `minWidth` cobre o texto original inteiro. Sem ele uma traducao mais curta que o
+ * ingles deixaria o resto da fala original aparecendo em volta do branco.
+ *
+ * `overflow_bottom` e a fala que a emenda entre paginas cortou: ela comeca nesta
+ * fatia e continua na seguinte. A tira nao recorta a fatia, entao somar o
+ * transbordo a altura e o bastante para a caixa atravessar a emenda.
+ */
+export function overlayBox(block, page) {
+  const bubble = bubbleRect(block.bbox, page);
+  const overflow = percent(block.overflow_bottom ?? 0, page.height);
+  const limit = bubble.height + overflow;
+
+  if (!block.text_bbox) {
+    return { ...bubble, height: limit, limit, minWidth: 0 };
+  }
+
+  const text = bubbleRect(grownBBox(block.text_bbox), page);
+  return {
+    left: bubble.left,
+    top: text.top,
+    width: bubble.width,
+    height: text.height,
+    limit,
+    minWidth: bubble.width === 0 ? 0 : clamp(percent(text.width, bubble.width), 0, 100),
+  };
 }
 
 /** Maior tamanho da serie decrescente que `overflows` aceita.

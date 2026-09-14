@@ -3,26 +3,46 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#111318">
-<title>mangatl</title>
+<meta name="theme-color" content="#161826">
+<title>Tinta</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<header class="bar" id="bar">
-  <a class="back" id="back" href="index.html" hidden aria-label="Voltar para a biblioteca">&#8592;</a>
-  <div class="title">
-    <strong id="title">mangatl</strong>
-    <span id="subtitle"></span>
+<header class="bar">
+  <div class="bar-row">
+    <a class="back" id="back" href="index.html" hidden>
+      <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M224 128a8 8 0 0 1-8 8H59.31l58.35 58.34a8 8 0 0 1-11.32 11.32l-72-72a8 8 0 0 1 0-11.32l72-72a8 8 0 0 1 11.32 11.32L59.31 120H216a8 8 0 0 1 8 8Z"></path></svg>
+      <span id="back-label">Biblioteca</span>
+    </a>
+
+    <div class="brand" id="brand">
+      <span class="mark"></span>
+      <span class="name">Tinta</span>
+    </div>
+
+    <div class="title" id="title-box" hidden>
+      <strong id="title"></strong>
+      <span id="subtitle"></span>
+    </div>
+
+    <input class="search" id="search" type="search" placeholder="Buscar obra" hidden aria-label="Buscar obra">
+
+    <div class="controls">
+      <span id="progress-label" hidden></span>
+      <label class="engine" id="engine-picker" hidden>
+        <span>motor</span>
+        <select id="engine"></select>
+      </label>
+      <button id="toggle-overlay" class="btn btn-ghost" hidden aria-pressed="true">tradução</button>
+      <button id="next-chapter" class="btn btn-primary" hidden>Próximo cap.</button>
+    </div>
   </div>
-  <div class="controls">
-    <label class="engine" id="engine-picker" hidden>
-      <span>motor</span>
-      <select id="engine"></select>
-    </label>
-    <button id="toggle-overlay" class="ghost" hidden aria-pressed="true">traducao</button>
+
+  <div class="progress-track" id="progress-track" hidden>
+    <div class="progress-fill" id="progress-fill"></div>
   </div>
 </header>
 
@@ -31,9 +51,9 @@
 </main>
 
 <nav class="pager" id="pager" hidden>
-  <button id="prev" class="ghost">&#8592; anterior</button>
+  <button id="prev" class="btn btn-secondary">&#8592; anterior</button>
   <span id="progress"></span>
-  <button id="next" class="ghost">proximo &#8594;</button>
+  <button id="next" class="btn btn-secondary">próximo &#8594;</button>
 </nav>
 
 <script type="module" src="app.js"></script>
