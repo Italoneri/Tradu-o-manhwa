@@ -14,7 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-PIPELINE_VERSION = 2
+PIPELINE_VERSION = 3
 """Sobe quando detect/ocr/ordering mudam de forma que invalida extracoes salvas."""
 
 BlockKind = Literal["bubble", "free"]
@@ -91,6 +91,21 @@ class ExtractedBlock(Frozen):
     kind: BlockKind = "bubble"
     """Com default para o extract.json da versao 1 ainda validar na comparacao."""
 
+    text_bbox: BBox | None = None
+    """Regiao ocupada pelo texto ORIGINAL dentro do balao.
+
+    Diferente de `bbox`, que e o balao inteiro. Num balao redondo a bbox e o
+    quadrado circunscrito e o texto ocupa uma fracao dela - tapar a bbox apaga o
+    contorno do balao sem necessidade. None quando o OCR nao devolveu caixa de
+    palavra."""
+
+    source_font_px: int | None = None
+    """Corpo do letreiramento original, em pixels da pagina.
+
+    Mediana da altura das caixas de palavra do Tesseract. E o unico sinal direto do
+    tamanho em que a pagina foi letrada; sem ele o leitor so consegue estimar a
+    partir do balao, e balao grande nao significa texto grande."""
+
 
 class ExtractedPage(Frozen):
     index: int = Field(ge=1)
@@ -122,6 +137,21 @@ class TranslatedBlock(Frozen):
     text: str
     kind: BlockKind = "bubble"
     """O leitor trata os dois diferente: caixa branca so faz sentido dentro de balao."""
+
+    text_bbox: BBox | None = None
+    """Regiao ocupada pelo texto ORIGINAL dentro do balao.
+
+    Diferente de `bbox`, que e o balao inteiro. Num balao redondo a bbox e o
+    quadrado circunscrito e o texto ocupa uma fracao dela - tapar a bbox apaga o
+    contorno do balao sem necessidade. None quando o OCR nao devolveu caixa de
+    palavra."""
+
+    source_font_px: int | None = None
+    """Corpo do letreiramento original, em pixels da pagina.
+
+    Mediana da altura das caixas de palavra do Tesseract. E o unico sinal direto do
+    tamanho em que a pagina foi letrada; sem ele o leitor so consegue estimar a
+    partir do balao, e balao grande nao significa texto grande."""
 
 
 class TranslatedPage(Frozen):

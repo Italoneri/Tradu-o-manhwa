@@ -29,7 +29,7 @@ from .models import (
     ExtractedPage,
     Extraction,
 )
-from .ocr import is_usable, read_block
+from .ocr import BlockReading, is_usable, read_block
 from .ordering import reading_order
 from .slicing import slice_chapter_in_place
 from .store import (
@@ -76,8 +76,8 @@ def _read_image(path: Path) -> np.ndarray:
 
 
 def _drop_repeated_readings(
-    readings: list[tuple[Detection, str, float]],
-) -> tuple[list[tuple[Detection, str, float]], list[BBox]]:
+    readings: list[tuple[Detection, BlockReading]],
+) -> tuple[list[tuple[Detection, BlockReading]], list[BBox]]:
     """Remove o mesmo texto lido duas vezes na mesma pagina.
 
     Um balao dentro de um painel branco produz duas caixas: a do balao e a do
@@ -89,24 +89,25 @@ def _drop_repeated_readings(
     baloes distintos ("...", "NAO!") nao se cruzam. Entre as duas, fica a caixa
     menor, que e a do balao e nao a do painel - e a que a Fase 2 precisa.
     """
-    kept: list[tuple[Detection, str, float]] = []
+    kept: list[tuple[Detection, BlockReading]] = []
     removed: list[BBox] = []
 
-    for detection, text, confidence in readings:
+    for detection, reading in readings:
         twin = next(
             (
                 index
-                for index, (other, other_text, _) in enumerate(kept)
-                if other_text == text and other.bbox.intersection_area(detection.bbox) > 0
+                for index, (other, other_reading) in enumerate(kept)
+                if other_reading.text == reading.text
+                and other.bbox.intersection_area(detection.bbox) > 0
             ),
             None,
         )
         if twin is None:
-            kept.append((detection, text, confidence))
+            kept.append((detection, reading))
             continue
         if detection.bbox.area < kept[twin][0].bbox.area:
             removed.append(kept[twin][0].bbox)
-            kept[twin] = (detection, text, confidence)
+            kept[twin] = (detection, reading)
         else:
             removed.append(detection.bbox)
 
@@ -127,30 +128,32 @@ def _extract_page(
     )
     ordered = [detections[position] for position in order]
 
-    readings: list[tuple[Detection, str, float]] = []
+    readings: list[tuple[Detection, BlockReading]] = []
     dropped: list[BBox] = []
     for detection in ordered:
         # O recorte do texto, nao o do balao: o contorno que sobra em volta faz o
         # Tesseract ler a borda como glifo.
-        text, confidence = read_block(image, detection.text_bbox, cfg.ocr)
-        if not is_usable(text, confidence, cfg.ocr):
+        reading = read_block(image, detection.text_bbox, cfg.ocr)
+        if not is_usable(reading.text, reading.confidence, cfg.ocr):
             dropped.append(detection.bbox)
             continue
-        readings.append((detection, text, confidence))
+        readings.append((detection, reading))
 
     readings, duplicates = _drop_repeated_readings(readings)
     dropped.extend(duplicates)
 
-    kept = [detection for detection, _, _ in readings]
+    kept = [detection for detection, _ in readings]
     blocks = [
         ExtractedBlock(
             id=f"p{index:03d}-b{position:02d}",
             bbox=detection.bbox,
-            raw_text=text,
-            confidence=confidence,
+            raw_text=reading.text,
+            confidence=reading.confidence,
             kind=detection.kind,
+            text_bbox=reading.text_bbox,
+            source_font_px=reading.source_font_px,
         )
-        for position, (detection, text, confidence) in enumerate(readings, start=1)
+        for position, (detection, reading) in enumerate(readings, start=1)
     ]
 
     if debug_dir is not None:

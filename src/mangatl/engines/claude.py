@@ -252,6 +252,10 @@ class ClaudeEngine:
                 # e o palpite seguro, porque e o unico caso em que o leitor pode
                 # pintar caixa - e sem bbox ele nao pinta nada mesmo.
                 kind=detected[line.block_id].kind if line.block_id in detected else "bubble",
+                text_bbox=detected[line.block_id].text_bbox if line.block_id in detected else None,
+                source_font_px=(
+                    detected[line.block_id].source_font_px if line.block_id in detected else None
+                ),
             )
             for position, line in enumerate(lines, start=1)
             if line.translation.strip()

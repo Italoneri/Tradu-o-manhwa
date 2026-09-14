@@ -141,6 +141,8 @@ class ArgosEngine:
                     source_text=block.raw_text,
                     text=translated.strip(),
                     kind=block.kind,
+                    text_bbox=block.text_bbox,
+                    source_font_px=block.source_font_px,
                 )
             )
         return TranslatedPage(
