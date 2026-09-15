@@ -36,6 +36,7 @@ from urllib.parse import unquote
 
 from .config import Config
 from .engines.base import available_engines
+from .jobs import Busy, JobRegistry
 from .models import SeriesMeta
 from .serving import ReaderHandler, serve_handler
 from .store import (
@@ -234,7 +235,19 @@ def image_suffix(data: bytes) -> str | None:
 
 # ---------- roteador ----------
 
-Handler = Callable[[Config, tuple[str, ...], bytes], tuple[int, object]]
+class Context(NamedTuple):
+    """O que uma rota precisa alem do proprio pedido.
+
+    O registro de jobs entra aqui e nao num modulo: ele guarda estado vivo, e
+    estado vivo em variavel de modulo vaza entre servidores - inclusive entre dois
+    testes que sobem o handler na mesma sessao.
+    """
+
+    cfg: Config
+    jobs: JobRegistry
+
+
+Handler = Callable[[Context, tuple[str, ...], bytes], tuple[int, object]]
 
 
 class Route(NamedTuple):
@@ -270,19 +283,19 @@ class RouteMatch(NamedTuple):
     allowed: tuple[str, ...] = ()
 
 
-def _health(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+def _health(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
     return HTTPStatus.OK, {
         "ok": True,
-        "root": str(cfg.root),
+        "root": str(ctx.cfg.root),
         "engines": available_engines(),
-        "detector": cfg.detect.backend,
+        "detector": ctx.cfg.detect.backend,
         # Booleano, nunca o valor: a chave nao sai desta maquina por resposta nenhuma.
         "has_api_key": bool(os.environ.get("ANTHROPIC_API_KEY")),
         "python": sys.version.split()[0],
     }
 
 
-def _series(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+def _series(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
     """Tudo que existe em library/, traduzido ou nao.
 
     `build_library` responderia outra pergunta - "o que da para ler" - e apagaria
@@ -291,7 +304,7 @@ def _series(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, obj
     o botao de traduzir.
     """
     return HTTPStatus.OK, {
-        "series": [state.model_dump(mode="json") for state in discover_series(cfg)]
+        "series": [state.model_dump(mode="json") for state in discover_series(ctx.cfg)]
     }
 
 
@@ -305,7 +318,7 @@ def _series_dir(cfg: Config, slug: str, *, must_exist: bool = True) -> Path:
     return directory
 
 
-def _create_series(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+def _create_series(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
     """Cria a pasta da serie e grava o titulo.
 
     O slug e o nome da pasta e nao muda depois; o titulo muda a vontade. Confundir
@@ -315,7 +328,7 @@ def _create_series(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[i
     if not isinstance(payload, dict):
         raise Invalid("esperava um objeto com slug e title")
 
-    directory = _series_dir(cfg, str(payload.get("slug", "")), must_exist=False)
+    directory = _series_dir(ctx.cfg, str(payload.get("slug", "")), must_exist=False)
     if directory.exists():
         return HTTPStatus.CONFLICT, {"error": f"serie {directory.name!r} ja existe"}
 
@@ -324,17 +337,17 @@ def _create_series(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[i
         raise Invalid("title precisa ser texto")
 
     directory.mkdir(parents=True)
-    save_series_meta(cfg, directory.name, SeriesMeta(title=title or directory.name))
+    save_series_meta(ctx.cfg, directory.name, SeriesMeta(title=title or directory.name))
     return HTTPStatus.CREATED, {"slug": directory.name, "title": title or directory.name}
 
 
-def _get_series_meta(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
-    directory = _series_dir(cfg, groups[0])
-    return HTTPStatus.OK, load_series_meta(cfg, directory.name).model_dump(mode="json")
+def _get_series_meta(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    directory = _series_dir(ctx.cfg, groups[0])
+    return HTTPStatus.OK, load_series_meta(ctx.cfg, directory.name).model_dump(mode="json")
 
 
-def _put_series_meta(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
-    directory = _series_dir(cfg, groups[0])
+def _put_series_meta(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    directory = _series_dir(ctx.cfg, groups[0])
     payload = json_body(body)
     if not isinstance(payload, dict):
         raise Invalid("esperava um objeto com title, cover e status")
@@ -345,17 +358,17 @@ def _put_series_meta(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple
             raise Invalid(f"{field} precisa ser texto")
 
     meta = SeriesMeta.model_validate(payload)
-    save_series_meta(cfg, directory.name, meta)
-    return HTTPStatus.OK, load_series_meta(cfg, directory.name).model_dump(mode="json")
+    save_series_meta(ctx.cfg, directory.name, meta)
+    return HTTPStatus.OK, load_series_meta(ctx.cfg, directory.name).model_dump(mode="json")
 
 
-def _put_cover(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+def _put_cover(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
     """Grava a capa da serie, com a extensao que os bytes disserem ser.
 
     As capas antigas saem junto: `_cover_url` escolhe entre `cover.*` pela ordem
     das extensoes, e deixar duas la significaria trocar a capa sem a troca aparecer.
     """
-    directory = _series_dir(cfg, groups[0])
+    directory = _series_dir(ctx.cfg, groups[0])
     suffix = image_suffix(body)
     if suffix is None:
         raise Invalid("o corpo nao e jpeg, png, webp nem bmp")
@@ -369,20 +382,20 @@ def _put_cover(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, 
     return HTTPStatus.OK, {"cover": target.name, "bytes": len(body)}
 
 
-def _get_glossary(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
-    directory = _series_dir(cfg, groups[0])
-    return HTTPStatus.OK, load_glossary(cfg, directory.name)
+def _get_glossary(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    directory = _series_dir(ctx.cfg, groups[0])
+    return HTTPStatus.OK, load_glossary(ctx.cfg, directory.name)
 
 
-def _put_glossary(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+def _put_glossary(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
     """Grava o glossario da serie.
 
     E o arquivo que mais precisa de edicao recorrente: e ele que impede o
     personagem de mudar de nome no capitulo seguinte.
     """
-    directory = _series_dir(cfg, groups[0])
+    directory = _series_dir(ctx.cfg, groups[0])
     terms = validate_glossary(json_body(body))
-    save_glossary(cfg, directory.name, terms)
+    save_glossary(ctx.cfg, directory.name, terms)
     return HTTPStatus.OK, terms
 
 
@@ -467,12 +480,12 @@ def extract_archive(data: bytes, target: Path) -> list[str]:
     return sorted(names, key=_natural_key)
 
 
-def _create_chapter(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+def _create_chapter(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
     """Abre a area de espera de um capitulo novo.
 
     Corpo vazio pede sugestao: o maior capitulo numerico que ja existe mais um.
     """
-    directory = _series_dir(cfg, groups[0])
+    directory = _series_dir(ctx.cfg, groups[0])
     payload = json_body(body)
     if payload is not None and not isinstance(payload, dict):
         raise Invalid("esperava um objeto com chapter, ou corpo vazio")
@@ -483,7 +496,7 @@ def _create_chapter(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[
     if not isinstance(asked, str):
         raise Invalid("chapter precisa ser texto")
 
-    chapter, incoming = _chapter_paths(cfg, directory.name, asked)
+    chapter, incoming = _chapter_paths(ctx.cfg, directory.name, asked)
     if chapter.is_dir():
         return HTTPStatus.CONFLICT, {"error": f"capitulo {chapter.name!r} ja existe"}
 
@@ -491,7 +504,7 @@ def _create_chapter(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[
     return HTTPStatus.CREATED, {"chapter": chapter.name, "incoming": True, "files": []}
 
 
-def _put_page(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+def _put_page(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
     """Grava uma pagina na area de espera.
 
     Um arquivo por requisicao, corpo cru: `http.server` nao parseia
@@ -503,7 +516,7 @@ def _put_page(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, o
     if name is None:
         raise Invalid(f"nome de pagina inaceitavel: {filename!r}")
 
-    _, incoming = _chapter_paths(cfg, slug, chapter)
+    _, incoming = _chapter_paths(ctx.cfg, slug, chapter)
     if not incoming.is_dir():
         raise Invalid("area de espera nao existe; crie o capitulo antes")
 
@@ -522,14 +535,14 @@ def _put_page(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, o
     return HTTPStatus.OK, {"file": name, "bytes": len(body)}
 
 
-def _put_archive(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+def _put_archive(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
     """Extrai um zip/cbz inteiro na area de espera.
 
     Falha apaga a area de espera toda: meio zip extraido e pior que zip nenhum,
     porque parece capitulo e o `commit` aceitaria.
     """
     slug, chapter = groups
-    _, incoming = _chapter_paths(cfg, slug, chapter)
+    _, incoming = _chapter_paths(ctx.cfg, slug, chapter)
     if not incoming.is_dir():
         raise Invalid("area de espera nao existe; crie o capitulo antes")
 
@@ -542,9 +555,9 @@ def _put_archive(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int
     return HTTPStatus.OK, {"files": names, "count": len(names)}
 
 
-def _get_incoming(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+def _get_incoming(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
     """O que ja subiu, na ordem que vai valer na leitura."""
-    _, incoming = _chapter_paths(cfg, groups[0], groups[1])
+    _, incoming = _chapter_paths(ctx.cfg, groups[0], groups[1])
     files = _incoming_files(incoming)
     return HTTPStatus.OK, {
         "exists": incoming.is_dir(),
@@ -553,12 +566,12 @@ def _get_incoming(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[in
     }
 
 
-def _delete_incoming(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+def _delete_incoming(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
     """Descarta a area de espera.
 
     E a unica remocao que o painel faz, e so apaga o que ele proprio escreveu.
     """
-    _, incoming = _chapter_paths(cfg, groups[0], groups[1])
+    _, incoming = _chapter_paths(ctx.cfg, groups[0], groups[1])
     if not incoming.is_dir():
         raise Invalid("nao ha area de espera para descartar")
 
@@ -567,14 +580,14 @@ def _delete_incoming(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple
     return HTTPStatus.OK, {"removed": removed}
 
 
-def _commit_chapter(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+def _commit_chapter(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
     """Promove a area de espera a capitulo.
 
     O rename e o unico instante em que o capitulo passa a existir para o resto do
     sistema: ate aqui `discover_chapters` nao o enxerga, entao upload interrompido
     nunca vira meio capitulo traduzido.
     """
-    chapter, incoming = _chapter_paths(cfg, groups[0], groups[1])
+    chapter, incoming = _chapter_paths(ctx.cfg, groups[0], groups[1])
     files = _incoming_files(incoming)
     if not files:
         raise Invalid("area de espera vazia; nao ha o que promover")
@@ -583,6 +596,55 @@ def _commit_chapter(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[
 
     incoming.rename(chapter)
     return HTTPStatus.OK, {"chapter": chapter.name, "files": [path.name for path in files]}
+
+
+# ---------- jobs ----------
+
+
+def _create_job(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    """Poe um capitulo para processar e devolve na hora.
+
+    202 e nao 200: o trabalho leva minutos e o que volta e um recibo, nao o
+    resultado. Quem chamou pergunta o progresso em `GET /api/jobs/<id>`.
+    """
+    payload = json_body(body)
+    if not isinstance(payload, dict):
+        raise Invalid("esperava um objeto com series, chapter e engine")
+
+    series = str(payload.get("series", ""))
+    chapter = str(payload.get("chapter", ""))
+    engine = str(payload.get("engine", "")) or ctx.cfg.translation.engine
+    if engine not in available_engines():
+        raise Invalid(f"motor {engine!r} nao existe; ha {', '.join(available_engines())}")
+
+    directory, _ = _chapter_paths(ctx.cfg, series, chapter)
+    if not directory.is_dir():
+        raise Invalid(f"capitulo {series}/{chapter} nao existe; promova a area de espera antes")
+
+    try:
+        job = ctx.jobs.start(
+            ctx.cfg,
+            series=directory.parent.name,
+            chapter=directory.name,
+            engine=engine,
+            force=bool(payload.get("force")),
+            dry_run=bool(payload.get("dry_run")),
+        )
+    except Busy as error:
+        return HTTPStatus.CONFLICT, {"error": str(error)}
+
+    return HTTPStatus.ACCEPTED, {"job_id": job.id, "job": job.snapshot()}
+
+
+def _list_jobs(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    return HTTPStatus.OK, {"jobs": [job.snapshot() for job in ctx.jobs.recent()]}
+
+
+def _get_job(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    job = ctx.jobs.get(groups[0])
+    if job is None:
+        return HTTPStatus.NOT_FOUND, {"error": f"job {groups[0]!r} nao existe neste processo"}
+    return HTTPStatus.OK, job.snapshot()
 
 
 _SLUG = r"([^/]+)"
@@ -637,6 +699,9 @@ ROUTES: tuple[Route, ...] = (
         _commit_chapter,
     ),
     Route("GET", re.compile(rf"^/api/series/{_SLUG}/chapters/{_SLUG}/incoming$"), _get_incoming),
+    Route("GET", re.compile(r"^/api/jobs$"), _list_jobs),
+    Route("POST", re.compile(r"^/api/jobs$"), _create_job, body_required=True),
+    Route("GET", re.compile(rf"^/api/jobs/{_SLUG}$"), _get_job),
     Route(
         "DELETE",
         re.compile(rf"^/api/series/{_SLUG}/chapters/{_SLUG}/incoming$"),
@@ -674,12 +739,17 @@ def match_route(method: str, path: str) -> RouteMatch | None:
 # ---------- ligacao HTTP ----------
 
 
-def make_panel_handler(cfg: Config) -> type[ReaderHandler]:
+def make_panel_handler(cfg: Config, jobs: JobRegistry | None = None) -> type[ReaderHandler]:
     """Handler que serve o leitor e, para a propria maquina, tambem o painel.
 
     Estende o `ReaderHandler`: pedido que nao casa com `/api/` cai no `super()` e
     e servido como arquivo, exatamente como antes.
+
+    `jobs` existe para o teste poder trocar o registro por um que nao dispara o
+    pipeline de verdade. Em producao o default e o unico caminho.
     """
+
+    context = Context(cfg=cfg, jobs=jobs or JobRegistry())
 
     class PanelHandler(ReaderHandler):
         def __init__(self, *args: object, **kwargs: object) -> None:
@@ -735,7 +805,7 @@ def make_panel_handler(cfg: Config) -> type[ReaderHandler]:
                 return True
 
             try:
-                status, payload = match.route.handler(cfg, match.groups, body)
+                status, payload = match.route.handler(context, match.groups, body)
             except Invalid as error:
                 self._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
                 return True

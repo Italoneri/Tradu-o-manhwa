@@ -28,6 +28,9 @@ from .models import (
     ExtractedBlock,
     ExtractedPage,
     Extraction,
+    Progress,
+    ProgressFn,
+    report,
 )
 from .ocr import BlockReading, is_usable, read_block
 from .ordering import reading_order
@@ -304,6 +307,7 @@ def extract_chapter(
     force: bool = False,
     debug_boxes: bool = False,
     detector_name: str | None = None,
+    progress: ProgressFn | None = None,
 ) -> ExtractionReport:
     """Detecta e OCRa as paginas do capitulo, pulando as que nao mudaram."""
     chapter_dir = chapter_input_dir(cfg, series, chapter)
@@ -313,8 +317,13 @@ def extract_chapter(
 
     # Captura de rolagem vira paginas normais antes de qualquer outra coisa, para
     # que o resto do pipeline nunca precise saber que ela existiu.
+    report(progress, Progress(phase="slice", total=len(images), detail="procurando a costura"))
     if slice_chapter_in_place(chapter_dir, images, cfg.slicing):
         images = list_page_images(chapter_dir)
+    report(
+        progress,
+        Progress(phase="slice", done=len(images), total=len(images), detail=f"{len(images)} paginas"),
+    )
 
     previous = None if force else load_extraction(cfg, series, chapter)
     debug_dir = chapter_output_dir(cfg, series, chapter) / "debug" if debug_boxes else None
@@ -336,10 +345,25 @@ def extract_chapter(
         log.info("operation=extract_page page=%d image=%s", index, path.name)
         pages.append(_extract_page(cfg, detector, path, index, debug_dir=debug_dir))
         fresh.add(index)
+        report(
+            progress,
+            Progress(phase="extract", done=index, total=len(images), detail=path.name),
+        )
 
     # Depois das paginas, e nao junto: a emenda precisa das duas ja detectadas
     # para saber se ha sinal de corte antes de pagar uma deteccao a mais.
-    for position in _seam_candidates(pages, fresh):
+    candidates = _seam_candidates(pages, fresh)
+    if candidates:
+        report(
+            progress,
+            Progress(
+                phase="extract",
+                done=len(images),
+                total=len(images),
+                detail=f"{len(candidates)} emendas entre paginas",
+            ),
+        )
+    for position in candidates:
         pages[position], pages[position + 1] = _stitch_seam(
             cfg,
             detector,
@@ -364,11 +388,16 @@ def extract_chapter(
     )
 
 
-def translate_chapter(cfg: Config, extraction: Extraction, engine: TranslationEngine) -> Chapter:
+def translate_chapter(
+    cfg: Config,
+    extraction: Extraction,
+    engine: TranslationEngine,
+    progress: ProgressFn | None = None,
+) -> Chapter:
     chapter_dir = chapter_input_dir(cfg, extraction.series, extraction.chapter)
     glossary = load_glossary(cfg, extraction.series)
 
-    pages = engine.translate_chapter(extraction.pages, glossary, chapter_dir)
+    pages = engine.translate_chapter(extraction.pages, glossary, chapter_dir, progress)
 
     chapter = Chapter(
         series=extraction.series,

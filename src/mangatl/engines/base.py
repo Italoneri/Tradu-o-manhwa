@@ -15,7 +15,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
 from ..config import Config
-from ..models import ExtractedPage, TranslatedPage
+from ..models import ExtractedPage, ProgressFn, TranslatedPage
 
 
 class TranslationEngine(Protocol):
@@ -28,6 +28,7 @@ class TranslationEngine(Protocol):
         pages: Sequence[ExtractedPage],
         glossary: Mapping[str, str],
         chapter_dir: object,
+        progress: ProgressFn | None = None,
     ) -> Sequence[TranslatedPage]: ...
 
 

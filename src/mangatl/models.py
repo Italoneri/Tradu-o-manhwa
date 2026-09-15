@@ -10,6 +10,7 @@ Manter os dois separados e o que permite trocar `--engine` sem rodar OCR de novo
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -23,6 +24,30 @@ BlockKind = Literal["bubble", "free"]
 
 class Frozen(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class Progress(Frozen):
+    """Onde o processamento esta, para quem quiser mostrar.
+
+    Injetado e nao global: o pipeline ja loga cada pagina, mas raspar log para
+    montar barra de progresso quebra na primeira vez que alguem mexe no texto da
+    mensagem. Quem chama passa uma funcao e decide o que fazer com o numero -
+    o CLI imprime, o painel atualiza o job.
+    """
+
+    phase: Literal["slice", "extract", "translate", "library"]
+    done: int = Field(default=0, ge=0)
+    total: int = Field(default=0, ge=0)
+    detail: str = ""
+
+
+ProgressFn = Callable[[Progress], None]
+
+
+def report(progress: ProgressFn | None, update: Progress) -> None:
+    """Avisa quem estiver ouvindo. Sem ouvinte, nao custa nada."""
+    if progress is not None:
+        progress(update)
 
 
 class BBox(Frozen):

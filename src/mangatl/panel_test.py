@@ -743,3 +743,142 @@ def test_keeps_the_staging_area_out_of_the_reader_index(panel_server: int, tmp_p
     assert [c["chapter"] for c in chapters] == ["001"]
     assert chapters[0]["incoming"] is True
     assert chapters[0]["image_count"] == 0, "o que esta na area de espera ainda nao e pagina"
+
+
+# ---------- jobs ----------
+
+
+@pytest.fixture
+def panel_with_jobs(tmp_path: Path):
+    """Painel com um registro que nao dispara pipeline nenhum.
+
+    Rodar o pipeline de verdade num teste de rota pediria imagens, Tesseract e o
+    detector; o que estas rotas precisam provar e outra coisa - que aceitam,
+    recusam e respondem o estado certo.
+    """
+    from .jobs_test import FakeRegistry
+
+    (tmp_path / "library" / "Obra" / "001").mkdir(parents=True)
+    (tmp_path / "reader").mkdir()
+    registry = FakeRegistry()
+
+    cfg = Config(root=tmp_path)
+    with _Server(("127.0.0.1", 0), make_panel_handler(cfg, registry)) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield httpd.server_address[1], registry
+        finally:
+            registry.release.set()
+            httpd.shutdown()
+            thread.join(timeout=5)
+
+
+def post_job(port: int, **fields: object) -> tuple[int, bytes]:
+    payload = {"series": "Obra", "chapter": "001", "engine": "free", **fields}
+    return _send(port, "POST", "/api/jobs", json.dumps(payload).encode("utf-8"))
+
+
+def test_accepts_the_job_and_answers_before_it_finishes(panel_with_jobs):
+    # 202 e nao 200: o que volta e um recibo, nao o resultado.
+    port, registry = panel_with_jobs
+
+    status, body = post_job(port)
+    payload = json.loads(body)
+
+    assert status == 202
+    assert payload["job"]["state"] == "running"
+    assert registry.get(payload["job_id"]) is not None
+
+
+def test_refuses_a_second_job_with_a_readable_conflict(panel_with_jobs):
+    port, registry = panel_with_jobs
+    post_job(port)
+
+    status, body = post_job(port)
+
+    assert status == 409
+    assert b"ja ha um processamento" in body
+
+
+def test_refuses_an_engine_that_does_not_exist(panel_with_jobs):
+    port, _ = panel_with_jobs
+
+    status, body = post_job(port, engine="tradutor-magico")
+
+    assert status == 422
+    assert b"nao existe" in body
+
+
+def test_refuses_a_chapter_that_was_never_committed(panel_with_jobs):
+    # Area de espera nao e capitulo: processar meio upload e o que ela evita.
+    port, _ = panel_with_jobs
+
+    status, body = post_job(port, chapter="999")
+
+    assert status == 422
+    assert b"nao existe" in body
+
+
+def test_reports_the_progress_of_a_running_job(panel_with_jobs):
+    port, registry = panel_with_jobs
+    job_id = json.loads(post_job(port)[1])["job_id"]
+
+    assert wait_for(lambda: registry.get(job_id).progress.total == 2)
+
+    status, body = _send(port, "GET", f"/api/jobs/{job_id}")
+    payload = json.loads(body)
+
+    assert status == 200
+    assert payload["progress"] == {
+        "phase": "extract",
+        "done": 1,
+        "total": 2,
+        "detail": "fingindo",
+    }
+
+
+def test_reports_the_job_as_done_with_its_log(panel_with_jobs):
+    port, registry = panel_with_jobs
+    job_id = json.loads(post_job(port)[1])["job_id"]
+    registry.release.set()
+
+    assert wait_for(lambda: registry.get(job_id).state == "done")
+
+    payload = json.loads(_send(port, "GET", f"/api/jobs/{job_id}")[1])
+
+    assert payload["state"] == "done"
+    assert payload["finished_at"] is not None
+    assert any("linha que o job coletou" in line for line in payload["log"])
+
+
+def test_lists_the_jobs_newest_first(panel_with_jobs):
+    port, registry = panel_with_jobs
+    registry.release.set()
+    first = json.loads(post_job(port)[1])["job_id"]
+    assert wait_for(lambda: registry.get(first).state == "done")
+    second = json.loads(post_job(port)[1])["job_id"]
+
+    payload = json.loads(_send(port, "GET", "/api/jobs")[1])
+
+    assert [job["id"] for job in payload["jobs"]] == [second, first]
+
+
+def test_reports_no_job_for_an_id_this_process_never_saw(panel_with_jobs):
+    port, _ = panel_with_jobs
+
+    status, body = _send(port, "GET", "/api/jobs/naoexiste")
+
+    assert status == 404
+    assert b"neste processo" in body
+
+
+def wait_for(condition, timeout: float = 5.0) -> bool:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.01)
+    return False

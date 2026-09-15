@@ -21,7 +21,7 @@ import cv2
 from pydantic import BaseModel, ConfigDict
 
 from ..config import Config
-from ..models import ExtractedPage, TranslatedBlock, TranslatedPage
+from ..models import ExtractedPage, Progress, ProgressFn, TranslatedBlock, TranslatedPage, report
 from .base import TranslationError
 
 log = logging.getLogger("mangatl.claude")
@@ -150,6 +150,7 @@ class ClaudeEngine:
         pages: Sequence[ExtractedPage],
         glossary: Mapping[str, str],
         chapter_dir: Path,
+        progress: ProgressFn | None = None,
     ) -> list[TranslatedPage]:
         if not pages:
             return []
@@ -157,9 +158,17 @@ class ClaudeEngine:
         system = _system_blocks(glossary)
         lines_by_page: dict[int, list[TranslatedLine]] = {page.index: [] for page in pages}
 
+        # Por bloco e nao por pagina: uma chamada traduz `chunk_pages` paginas de
+        # uma vez, e nada dentro dela conclui antes da resposta chegar.
+        done = 0
         for chunk in _chunks(pages, self._cfg.translation.chunk_pages):
             for line in self._translate_chunk(chunk, system, Path(chapter_dir)):
                 lines_by_page.setdefault(line.page_index, []).append(line)
+            done += len(chunk)
+            report(
+                progress,
+                Progress(phase="translate", done=done, total=len(pages), detail=chunk[-1].image),
+            )
 
         return [self._assemble(page, lines_by_page.get(page.index, [])) for page in pages]
 
