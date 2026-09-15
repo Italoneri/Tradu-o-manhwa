@@ -38,7 +38,7 @@ from .serving import ReaderHandler, serve_handler
 from .store import (
     COVER_STEM,
     IMAGE_SUFFIXES,
-    build_library,
+    discover_series,
     load_glossary,
     load_series_meta,
     save_glossary,
@@ -253,12 +253,16 @@ def _health(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, obj
 
 
 def _series(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
-    """O mesmo conteudo de library.json, gerado na hora.
+    """Tudo que existe em library/, traduzido ou nao.
 
-    Na hora e nao lido do disco porque o painel mostra a verdade do disco; o
-    `library.json` salvo continua sendo o que o leitor consome.
+    `build_library` responderia outra pergunta - "o que da para ler" - e apagaria
+    os dois estados que o painel existe para mostrar: a serie recem-criada e o
+    capitulo enviado e ainda nao traduzido, que e o estado normal entre o upload e
+    o botao de traduzir.
     """
-    return HTTPStatus.OK, build_library(cfg).model_dump(mode="json")
+    return HTTPStatus.OK, {
+        "series": [state.model_dump(mode="json") for state in discover_series(cfg)]
+    }
 
 
 def _series_dir(cfg: Config, slug: str, *, must_exist: bool = True) -> Path:

@@ -270,12 +270,14 @@ que mente, entao o loop de extracao tambem conta os bytes escritos e aborta."""
 
 ```
 GET /api/health   -> {ok, root, engines, detector, has_api_key, python}
-GET /api/series   -> o mesmo conteudo de library.json, gerado na hora
+GET /api/series   -> o que existe no disco (ver FASE 1.5)
 ```
 
-`GET /api/series` chama `build_library(cfg)` em vez de ler o JSON salvo: o painel
-mostra a verdade do disco, e o `library.json` continua sendo o que o leitor
-consome.
+`GET /api/series` **não** pode ser `build_library(cfg)`, embora nesta fase pareça
+o caminho óbvio: aquela função responde "o que dá para ler", e o painel pergunta
+"o que existe". São conjuntos diferentes, e a FASE 1.5 separa os dois. Enquanto
+ela não chegar, devolva `build_library` com um comentário dizendo que é
+provisório — ou vá direto para a 1.5, que é o mais honesto.
 
 **PARE.** Rode `pytest`, suba `mangatl serve`, teste com `curl`:
 
@@ -335,6 +337,170 @@ Valide o glossário na borda: objeto JSON de string para string, chaves não
 vazias, no máximo 500 entradas. Erro devolve 422 com mensagem legível, não 500.
 
 **PARE.** `pytest`. Relate.
+
+---
+
+## FASE 1.5 — O painel precisa da verdade do disco, não do índice do leitor
+
+### Por que esta fase existe
+
+`build_library` responde uma pergunta só: **o que dá para ler**. O filtro está
+explícito nela:
+
+```python
+engines = _translated_engines(cfg, series, chapter)
+if not engines:
+    continue
+```
+
+Para o leitor isso é exatamente certo — capítulo sem tradução não tem o que abrir,
+e `chapters_by_series` é um `defaultdict`, então uma série cujos capítulos todos
+caem nesse `continue` nunca ganha chave e some do índice inteiro.
+
+Para o painel, isso apaga dois estados que ele existe para mostrar:
+
+1. **Série recém-criada, ainda sem capítulo.** Some da lista até ter um capítulo
+   traduzido — e a tela precisa listá-la justamente para você escolher onde subir
+   o primeiro.
+2. **Capítulo enviado e ainda não traduzido.** Some também. E se for o único
+   capítulo da série, leva a série junto.
+
+O segundo é o que importa. Ele não é canto raro: é **o estado normal entre o
+upload e o botão traduzir**. Um painel que não enxerga o capítulo recém-enviado
+não tem como oferecer o botão que o traduz. Sem esta fase, a Fase 4 é escrita
+contra uma rota que não pode funcionar.
+
+### A decisão
+
+Não é rota nova, e não é `build_library` devolvendo entrada marcada. As duas
+saídas erram o alvo pelo mesmo motivo: tratam isso como diferença de formato,
+quando é diferença de pergunta.
+
+**Separe a caminhada do filtro dentro do `store.py`:**
+
+```
+discover_series(cfg)   ->  tudo que existe em library/        (verdade do disco)
+build_library(cfg)     ->  consome discover_series e filtra   (verdade do leitor)
+```
+
+Uma caminhada só no disco, duas leituras dela. `build_library` mantém assinatura,
+saída e `library.json` **byte a byte iguais** — o leitor não muda, o service
+worker não muda, não há versão para subir. O que muda é de onde ela tira os
+dados.
+
+### Modelos
+
+Em `models.py`, ao lado de `ChapterEntry` e `SeriesEntry`, e não no lugar deles:
+
+```python
+class ChapterState(Frozen):
+    """O que existe no disco para um capitulo, traduzido ou nao.
+
+    Irma de `ChapterEntry`, que descreve o que o leitor pode abrir. Sao dois
+    conjuntos diferentes: todo `ChapterEntry` tem um `ChapterState`, o contrario
+    nao vale, e e justamente a diferenca entre os dois que o painel precisa
+    mostrar."""
+
+    chapter: str
+
+    image_count: int
+    """Imagens em library/<serie>/<cap>/ - NAO e o `page_count` do ChapterEntry.
+
+    Aquele conta paginas do capitulo ja traduzido; este conta arquivos no disco.
+    Os dois divergem de proposito e por muito: tres capturas de rolagem viram 155
+    fatias depois do `slice_chapter_in_place`. Dar o mesmo nome aos dois numeros
+    seria convidar o erro de exibir um achando que e o outro."""
+
+    engines: tuple[str, ...] = ()
+    """Vazio significa "enviado, ainda nao traduzido" - o estado que o painel
+    precisa ver para oferecer o botao de traduzir."""
+
+    incoming: bool = False
+    """Existe `<cap>.incoming/`: upload em andamento ou interrompido. Sempre False
+    ate a FASE 2 criar essa pasta."""
+
+
+class SeriesState(Frozen):
+    series: str
+    """O slug, que e o nome da pasta - mesmo nome do campo em SeriesEntry."""
+
+    title: str = ""
+    cover: str | None = None
+    chapters: tuple[ChapterState, ...] = ()
+```
+
+`title` e `cover` saem de `load_series_meta` e `_series_cover`, que já existem da
+Fase 1. Reaproveite; não escreva um segundo resolvedor de capa.
+
+### `discover_series`
+
+```python
+def discover_series(cfg: Config) -> tuple[SeriesState, ...]:
+    """Toda serie em library/, com todo capitulo, traduzido ou nao.
+
+    Percorre `library_dir` direto em vez de passar por `discover_chapters`, que
+    so devolve par (serie, capitulo) e por isso nao tem como representar serie
+    sem capitulo nenhum."""
+```
+
+Regras, cada uma com teste:
+
+- série = todo diretório direto em `library_dir`, ordenado por `_natural_key`;
+  **série sem capítulo aparece**, com `chapters=()`
+- capítulo = todo subdiretório, ordenado por `_natural_key`, **exceto** os
+  terminados em `.incoming` e `_source` (aquele é a captura original arquivada
+  pelo fatiamento, não um capítulo)
+- `image_count` = `len(list_page_images(dir))`; capítulo com zero imagens ainda
+  aparece, porque pasta vazia no meio do fluxo é informação, não ruído
+- `incoming` = existe `library/<serie>/<cap>.incoming/`
+
+Um capítulo que só existe como `.incoming` (ainda não commitado) entra na lista
+com `image_count=0` e `incoming=True`. É o que permite a tela da Fase 2 oferecer
+"continuar upload interrompido".
+
+### `build_library` passa a consumir
+
+Reescreva-a sobre `discover_series`, mantendo o filtro onde está hoje:
+
+```python
+for state in discover_series(cfg):
+    entries = [...]      # so os capitulos com engines
+    if not entries:
+        continue         # serie sem nada legivel nao entra no indice do leitor
+```
+
+`ChapterEntry.page_count` continua vindo de `len(first.pages)` do capítulo
+carregado, **não** de `image_count`. Se você trocar um pelo outro, o leitor passa
+a anunciar 3 páginas num capítulo de 155.
+
+O `store_test.py` existente é o guarda-costas desta fase: se algum teste de
+`build_library` mudar de expectativa, a refatoração saiu errada. Não ajuste o
+teste para passar — ajuste o código.
+
+### Rota
+
+```
+GET /api/series   -> discover_series(cfg), serializado
+```
+
+Corrija também a linha da seção 0.5, que descrevia esta rota como
+`build_library`.
+
+### Testes
+
+Numa `library/` de mentira, em `tmp_path`:
+
+- série sem capítulo nenhum → aparece, `chapters=()`
+- capítulo com imagens e sem `chapter.*.json` → aparece com `engines=()`
+- capítulo traduzido por dois motores → `engines` ordenado, com os dois
+- `<cap>.incoming/` → `incoming=True` no capítulo correspondente
+- `_source/` dentro de um capítulo → **não** vira capítulo
+- mesmo cenário por `build_library` → a série sem nada traduzido **não** aparece,
+  e o `page_count` continua vindo do JSON traduzido
+
+**PARE.** `pytest`. Confirme com `curl -s localhost:8000/api/series | jq` que a
+série `Eu me tornei a Neta Desprezada` aparece com o capítulo `001`, e que uma
+pasta de série vazia criada na mão também aparece. Relate.
 
 ---
 
@@ -564,8 +730,11 @@ Suba o `VERSION` do service worker de `mangatl-v3` para `mangatl-v4`.
 
 Não é teste unitário; é o único juiz. Execute e responda por escrito:
 
-1. Do PC, criar uma série nova com capa e título. Ela aparece na biblioteca com o
-   título certo?
+1. Do PC, criar uma série nova com capa e título. Ela aparece **no painel** assim
+   que é criada, antes de ter capítulo nenhum? (Na biblioteca do leitor ela não
+   deve aparecer ainda — são perguntas diferentes.)
+1b. Enviar um capítulo e **não** traduzir. Ele aparece no painel com o botão de
+   traduzir disponível? Continua fora do leitor?
 2. Adicionar um capítulo arrastando 20 imagens fora de ordem alfabética
    (`2.jpg`, `10.jpg`, `1.jpg`). A ordem de leitura saiu certa?
 3. Adicionar um capítulo por `.cbz`. Mesma pergunta.
@@ -609,6 +778,10 @@ Os itens 8 e 9 são os que não podem falhar.
 - [ ] Tetos de tamanho aplicados antes de escrever em disco
 - [ ] `discover_chapters` ignora `*.incoming`
 - [ ] `series.json` com `title`, e `SeriesEntry.title` com default = slug
+- [ ] `discover_series` devolve série sem capítulo e capítulo sem motor
+- [ ] `build_library` reescrita sobre ela, com `library.json` byte a byte igual e `store_test.py` intocado
+- [ ] `image_count` e `page_count` são campos distintos, com o porquê escrito
+- [ ] `GET /api/series` devolve `discover_series`, não `build_library`
 - [ ] Glossário editável por tabela, validado na borda
 - [ ] Upload arquivo a arquivo, sem multipart; zip extraído entrada a entrada, sem `extractall`
 - [ ] `commit` recusa capítulo já existente e área de espera vazia

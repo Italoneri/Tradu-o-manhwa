@@ -196,6 +196,42 @@ class ChapterEntry(Frozen):
     """Caminho servivel da capa, relativo a raiz servida. None quando o capitulo nao tem."""
 
 
+class ChapterState(Frozen):
+    """O que existe no disco para um capitulo, traduzido ou nao.
+
+    Irma de `ChapterEntry`, que descreve o que o leitor pode abrir. Sao dois
+    conjuntos diferentes: todo `ChapterEntry` tem um `ChapterState`, o contrario
+    nao vale, e e justamente a diferenca entre os dois que o painel precisa
+    mostrar.
+    """
+
+    chapter: str
+
+    image_count: int = Field(default=0, ge=0)
+    """Imagens em library/<serie>/<cap>/ - NAO e o `page_count` do ChapterEntry.
+
+    Aquele conta paginas do capitulo ja traduzido; este conta arquivos no disco.
+    Os dois divergem de proposito e por muito: tres capturas de rolagem viram 155
+    fatias depois do `slice_chapter_in_place`. Dar o mesmo nome aos dois numeros
+    seria convidar o erro de exibir um achando que e o outro."""
+
+    engines: tuple[str, ...] = ()
+    """Vazio significa "enviado, ainda nao traduzido" - o estado que o painel
+    precisa ver para oferecer o botao de traduzir."""
+
+    incoming: bool = False
+    """Existe `<cap>.incoming/`: upload em andamento ou interrompido."""
+
+
+class SeriesState(Frozen):
+    series: str
+    """O slug, que e o nome da pasta - mesmo nome do campo em SeriesEntry."""
+
+    title: str = ""
+    cover: str | None = None
+    chapters: tuple[ChapterState, ...] = ()
+
+
 class SeriesMeta(Frozen):
     """Conteudo de `library/<slug>/series.json`, todo opcional.
 

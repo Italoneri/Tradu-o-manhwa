@@ -276,13 +276,37 @@ def test_never_answers_with_the_api_key(panel_server: int):
     assert b"sk-" not in body
 
 
-def test_builds_the_library_from_disk(panel_server: int):
+def test_lists_the_disk_and_not_the_reader_index(panel_server: int, tmp_path: Path):
+    # Uma serie com capitulo enviado e nao traduzido: o painel precisa ve-la para
+    # oferecer o botao que a traduz, e o leitor nao pode lista-la porque nao ha o
+    # que abrir.
+    chapter = tmp_path / "library" / "Obra" / "001"
+    chapter.mkdir(parents=True)
+    (chapter / "1.jpg").write_bytes(b"0")
+
     status, body = _get(panel_server, "/api/series")
     payload = json.loads(body)
 
     assert status == 200
-    assert payload["series"] == []
-    assert payload["library_base"] == "library"
+    assert [s["series"] for s in payload["series"]] == ["Obra"]
+    assert payload["series"][0]["chapters"][0]["image_count"] == 1
+    assert payload["series"][0]["chapters"][0]["engines"] == []
+
+
+def test_lists_an_empty_library_as_empty(panel_server: int):
+    status, body = _get(panel_server, "/api/series")
+
+    assert status == 200
+    assert json.loads(body)["series"] == []
+
+
+def test_shows_a_series_created_by_the_panel_right_away(panel_server: int):
+    # Sem isso a tela criaria a serie e ela sumiria ate ter capitulo traduzido.
+    _send(panel_server, "POST", "/api/series", json.dumps({"slug": "Recem-criada"}).encode("utf-8"))
+
+    _, body = _get(panel_server, "/api/series")
+
+    assert [s["series"] for s in json.loads(body)["series"]] == ["Recem-criada"]
 
 
 def test_keeps_serving_the_reader_next_to_the_panel(panel_server: int):
