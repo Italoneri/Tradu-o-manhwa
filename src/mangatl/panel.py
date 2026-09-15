@@ -21,10 +21,13 @@ headless e quebra a cada mudanca de layout, entao a origem das imagens e upload.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
+import shutil
 import sys
+import zipfile
 from collections.abc import Callable, Sequence
 from http import HTTPStatus
 from pathlib import Path, PurePosixPath
@@ -33,12 +36,16 @@ from urllib.parse import unquote
 
 from .config import Config
 from .engines.base import available_engines
+from .jobs import Busy, JobRegistry
 from .models import SeriesMeta
 from .serving import ReaderHandler, serve_handler
 from .store import (
     COVER_STEM,
     IMAGE_SUFFIXES,
-    build_library,
+    INCOMING_SUFFIX,
+    _natural_key,
+    discover_series,
+    list_page_images,
     load_glossary,
     load_series_meta,
     save_glossary,
@@ -120,19 +127,15 @@ def safe_page_name(name: str) -> str | None:
     return name if PurePosixPath(name).suffix.lower() in IMAGE_SUFFIXES else None
 
 
-def safe_archive_members(names: Sequence[str]) -> list[str] | None:
-    """Entradas de um zip que podem ser extraidas, ou None se alguma for hostil.
+def safe_archive_entries(names: Sequence[str]) -> list[tuple[int, str]] | None:
+    """Posicao e nome-base de cada entrada que pode ser extraida, ou None.
 
-    Zip carrega caminho dentro de si e a stdlib extrai o que estiver escrito -
-    inclusive `../../.env`. Uma entrada hostil condena o arquivo inteiro em vez de
-    ser pulada: zip com caminho de fuga nao e capitulo mal montado, e continuar
-    extraindo o resto seria tratar ataque como tropeco.
-
-    Diretorio e ignorado, assim como o `__MACOSX/` que o Finder enfia em todo zip.
-    Entrada que nao e imagem tambem e ignorada - nao e hostil, so nao e pagina.
+    Devolve a posicao junto porque quem extrai precisa voltar ao `ZipInfo`
+    correspondente: gravar pelo nome-base e o ponto, e o nome-base sozinho nao
+    diz de qual entrada ele veio.
     """
-    kept: list[str] = []
-    for raw in names:
+    kept: list[tuple[int, str]] = []
+    for index, raw in enumerate(names):
         name = raw.replace("\\", "/")
         if name.startswith("/") or ":" in name:
             return None
@@ -147,8 +150,23 @@ def safe_archive_members(names: Sequence[str]) -> list[str] | None:
 
         page = safe_page_name(parts[-1])
         if page is not None:
-            kept.append(page)
+            kept.append((index, page))
     return kept
+
+
+def safe_archive_members(names: Sequence[str]) -> list[str] | None:
+    """Entradas de um zip que podem ser extraidas, ou None se alguma for hostil.
+
+    Zip carrega caminho dentro de si e a stdlib extrai o que estiver escrito -
+    inclusive `../../.env`. Uma entrada hostil condena o arquivo inteiro em vez de
+    ser pulada: zip com caminho de fuga nao e capitulo mal montado, e continuar
+    extraindo o resto seria tratar ataque como tropeco.
+
+    Diretorio e ignorado, assim como o `__MACOSX/` que o Finder enfia em todo zip.
+    Entrada que nao e imagem tambem e ignorada - nao e hostil, so nao e pagina.
+    """
+    entries = safe_archive_entries(names)
+    return None if entries is None else [name for _, name in entries]
 
 
 # ---------- o que chega no corpo ----------
@@ -217,7 +235,19 @@ def image_suffix(data: bytes) -> str | None:
 
 # ---------- roteador ----------
 
-Handler = Callable[[Config, tuple[str, ...], bytes], tuple[int, object]]
+class Context(NamedTuple):
+    """O que uma rota precisa alem do proprio pedido.
+
+    O registro de jobs entra aqui e nao num modulo: ele guarda estado vivo, e
+    estado vivo em variavel de modulo vaza entre servidores - inclusive entre dois
+    testes que sobem o handler na mesma sessao.
+    """
+
+    cfg: Config
+    jobs: JobRegistry
+
+
+Handler = Callable[[Context, tuple[str, ...], bytes], tuple[int, object]]
 
 
 class Route(NamedTuple):
@@ -226,6 +256,19 @@ class Route(NamedTuple):
     handler: Handler
     max_body: int = MAX_JSON_BYTES
     """Teto do corpo, conferido pelo `Content-Length` antes de ler um byte."""
+
+    body_required: bool = False
+    """Se a rota recusa pedido sem `Content-Length` declarado.
+
+    Marcado rota a rota, e nao deduzido do metodo: `commit` e o descarte da area
+    de espera sao POST e DELETE sem corpo nenhum, e criar capitulo aceita corpo
+    vazio para pedir a sugestao de numero. Cliente nenhum concorda sobre mandar
+    `Content-Length: 0` num pedido sem corpo, entao exigir pelo metodo devolveria
+    411 no uso normal.
+
+    O default e o lado seguro de errar: uma rota que le corpo e esquece a marca
+    recebe b"" e recusa com 422 pela propria validacao, em vez de aceitar lixo.
+    """
 
 
 class RouteMatch(NamedTuple):
@@ -240,25 +283,29 @@ class RouteMatch(NamedTuple):
     allowed: tuple[str, ...] = ()
 
 
-def _health(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+def _health(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
     return HTTPStatus.OK, {
         "ok": True,
-        "root": str(cfg.root),
+        "root": str(ctx.cfg.root),
         "engines": available_engines(),
-        "detector": cfg.detect.backend,
+        "detector": ctx.cfg.detect.backend,
         # Booleano, nunca o valor: a chave nao sai desta maquina por resposta nenhuma.
         "has_api_key": bool(os.environ.get("ANTHROPIC_API_KEY")),
         "python": sys.version.split()[0],
     }
 
 
-def _series(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
-    """O mesmo conteudo de library.json, gerado na hora.
+def _series(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    """Tudo que existe em library/, traduzido ou nao.
 
-    Na hora e nao lido do disco porque o painel mostra a verdade do disco; o
-    `library.json` salvo continua sendo o que o leitor consome.
+    `build_library` responderia outra pergunta - "o que da para ler" - e apagaria
+    os dois estados que o painel existe para mostrar: a serie recem-criada e o
+    capitulo enviado e ainda nao traduzido, que e o estado normal entre o upload e
+    o botao de traduzir.
     """
-    return HTTPStatus.OK, build_library(cfg).model_dump(mode="json")
+    return HTTPStatus.OK, {
+        "series": [state.model_dump(mode="json") for state in discover_series(ctx.cfg)]
+    }
 
 
 def _series_dir(cfg: Config, slug: str, *, must_exist: bool = True) -> Path:
@@ -271,7 +318,7 @@ def _series_dir(cfg: Config, slug: str, *, must_exist: bool = True) -> Path:
     return directory
 
 
-def _create_series(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+def _create_series(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
     """Cria a pasta da serie e grava o titulo.
 
     O slug e o nome da pasta e nao muda depois; o titulo muda a vontade. Confundir
@@ -281,7 +328,7 @@ def _create_series(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[i
     if not isinstance(payload, dict):
         raise Invalid("esperava um objeto com slug e title")
 
-    directory = _series_dir(cfg, str(payload.get("slug", "")), must_exist=False)
+    directory = _series_dir(ctx.cfg, str(payload.get("slug", "")), must_exist=False)
     if directory.exists():
         return HTTPStatus.CONFLICT, {"error": f"serie {directory.name!r} ja existe"}
 
@@ -290,17 +337,17 @@ def _create_series(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[i
         raise Invalid("title precisa ser texto")
 
     directory.mkdir(parents=True)
-    save_series_meta(cfg, directory.name, SeriesMeta(title=title or directory.name))
+    save_series_meta(ctx.cfg, directory.name, SeriesMeta(title=title or directory.name))
     return HTTPStatus.CREATED, {"slug": directory.name, "title": title or directory.name}
 
 
-def _get_series_meta(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
-    directory = _series_dir(cfg, groups[0])
-    return HTTPStatus.OK, load_series_meta(cfg, directory.name).model_dump(mode="json")
+def _get_series_meta(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    directory = _series_dir(ctx.cfg, groups[0])
+    return HTTPStatus.OK, load_series_meta(ctx.cfg, directory.name).model_dump(mode="json")
 
 
-def _put_series_meta(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
-    directory = _series_dir(cfg, groups[0])
+def _put_series_meta(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    directory = _series_dir(ctx.cfg, groups[0])
     payload = json_body(body)
     if not isinstance(payload, dict):
         raise Invalid("esperava um objeto com title, cover e status")
@@ -311,17 +358,17 @@ def _put_series_meta(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple
             raise Invalid(f"{field} precisa ser texto")
 
     meta = SeriesMeta.model_validate(payload)
-    save_series_meta(cfg, directory.name, meta)
-    return HTTPStatus.OK, load_series_meta(cfg, directory.name).model_dump(mode="json")
+    save_series_meta(ctx.cfg, directory.name, meta)
+    return HTTPStatus.OK, load_series_meta(ctx.cfg, directory.name).model_dump(mode="json")
 
 
-def _put_cover(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+def _put_cover(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
     """Grava a capa da serie, com a extensao que os bytes disserem ser.
 
     As capas antigas saem junto: `_cover_url` escolhe entre `cover.*` pela ordem
     das extensoes, e deixar duas la significaria trocar a capa sem a troca aparecer.
     """
-    directory = _series_dir(cfg, groups[0])
+    directory = _series_dir(ctx.cfg, groups[0])
     suffix = image_suffix(body)
     if suffix is None:
         raise Invalid("o corpo nao e jpeg, png, webp nem bmp")
@@ -335,21 +382,269 @@ def _put_cover(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, 
     return HTTPStatus.OK, {"cover": target.name, "bytes": len(body)}
 
 
-def _get_glossary(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
-    directory = _series_dir(cfg, groups[0])
-    return HTTPStatus.OK, load_glossary(cfg, directory.name)
+def _get_glossary(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    directory = _series_dir(ctx.cfg, groups[0])
+    return HTTPStatus.OK, load_glossary(ctx.cfg, directory.name)
 
 
-def _put_glossary(cfg: Config, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+def _put_glossary(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
     """Grava o glossario da serie.
 
     E o arquivo que mais precisa de edicao recorrente: e ele que impede o
     personagem de mudar de nome no capitulo seguinte.
     """
-    directory = _series_dir(cfg, groups[0])
+    directory = _series_dir(ctx.cfg, groups[0])
     terms = validate_glossary(json_body(body))
-    save_glossary(cfg, directory.name, terms)
+    save_glossary(ctx.cfg, directory.name, terms)
     return HTTPStatus.OK, terms
+
+
+# ---------- area de espera do upload ----------
+
+
+def next_chapter_name(existing: Sequence[str]) -> str:
+    """O proximo numero de capitulo, na largura que a serie ja usa.
+
+    So capitulo puramente numerico conta. Uma serie com "extra" e "001" continua
+    sugerindo "002"; uma serie so com nomes soltos sugere "001" e deixa a escolha
+    com quem esta subindo.
+    """
+    numeric = [name for name in existing if name.isdigit()]
+    if not numeric:
+        return "001"
+    last = max(numeric, key=_natural_key)
+    return str(int(last) + 1).zfill(len(last))
+
+
+def _chapter_paths(cfg: Config, slug: str, chapter: str) -> tuple[Path, Path]:
+    """Onde o capitulo mora depois de pronto e enquanto sobe."""
+    directory = _series_dir(cfg, slug)
+    name = safe_component(chapter)
+    if name is None:
+        raise Invalid(f"nome de capitulo inaceitavel: {chapter!r}")
+    return directory / name, directory / f"{name}{INCOMING_SUFFIX}"
+
+
+def _incoming_files(incoming: Path) -> list[Path]:
+    return list_page_images(incoming) if incoming.is_dir() else []
+
+
+def extract_archive(data: bytes, target: Path) -> list[str]:
+    """Grava as paginas do zip na area de espera, uma entrada por vez.
+
+    Nunca `extractall`: ele obedece ao caminho gravado dentro do zip, e o zip
+    carrega o caminho que quiser. A ordem das checagens tambem importa - o veto
+    sobre os nomes vem antes de qualquer byte sair, senao a entrada hostil ja
+    escreveu quando a recusa acontece.
+
+    O teto do descompactado e conferido duas vezes de proposito: o `file_size`
+    declarado antes de abrir, porque um zip de 1MB pode dizer 100GB, e os bytes
+    realmente escritos durante a copia, porque quem escreve o declarado e o zip.
+    """
+    buffer = io.BytesIO(data)
+    if not zipfile.is_zipfile(buffer):
+        raise Invalid("o corpo nao e um zip; .cbz tambem e zip, o nome nao decide")
+
+    with zipfile.ZipFile(buffer) as archive:
+        infos = archive.infolist()
+        entries = safe_archive_entries([info.filename for info in infos])
+        if entries is None:
+            raise Invalid("o arquivo tem entrada com caminho de fuga; nada foi extraido")
+        if not entries:
+            raise Invalid("o arquivo nao tem nenhuma imagem")
+        if len(entries) > MAX_PAGES_PER_CHAPTER:
+            raise Invalid(f"{len(entries)} paginas; o teto e {MAX_PAGES_PER_CHAPTER}")
+
+        names = [name for _, name in entries]
+        if len(set(names)) != len(names):
+            # Duas pastas dentro do zip com a mesma pagina: gravar pelo nome-base
+            # faria uma apagar a outra, e o capitulo perderia pagina em silencio.
+            raise Invalid("duas entradas do arquivo tem o mesmo nome de pagina")
+
+        declared = sum(infos[index].file_size for index, _ in entries)
+        if declared > MAX_ARCHIVE_EXPANDED_BYTES:
+            raise Invalid(
+                f"o arquivo declara {declared} bytes descompactados;"
+                f" o teto e {MAX_ARCHIVE_EXPANDED_BYTES}"
+            )
+
+        written = 0
+        for index, name in entries:
+            with archive.open(infos[index]) as source, (target / name).open("wb") as sink:
+                while chunk := source.read(64 * 1024):
+                    written += len(chunk)
+                    if written > MAX_ARCHIVE_EXPANDED_BYTES:
+                        raise Invalid("o descompactado passou do teto no meio da extracao")
+                    sink.write(chunk)
+
+    return sorted(names, key=_natural_key)
+
+
+def _create_chapter(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    """Abre a area de espera de um capitulo novo.
+
+    Corpo vazio pede sugestao: o maior capitulo numerico que ja existe mais um.
+    """
+    directory = _series_dir(ctx.cfg, groups[0])
+    payload = json_body(body)
+    if payload is not None and not isinstance(payload, dict):
+        raise Invalid("esperava um objeto com chapter, ou corpo vazio")
+
+    asked = (payload or {}).get("chapter") or next_chapter_name(
+        [entry.name for entry in directory.iterdir() if entry.is_dir()]
+    )
+    if not isinstance(asked, str):
+        raise Invalid("chapter precisa ser texto")
+
+    chapter, incoming = _chapter_paths(ctx.cfg, directory.name, asked)
+    if chapter.is_dir():
+        return HTTPStatus.CONFLICT, {"error": f"capitulo {chapter.name!r} ja existe"}
+
+    incoming.mkdir(exist_ok=True)
+    return HTTPStatus.CREATED, {"chapter": chapter.name, "incoming": True, "files": []}
+
+
+def _put_page(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    """Grava uma pagina na area de espera.
+
+    Um arquivo por requisicao, corpo cru: `http.server` nao parseia
+    `multipart/form-data` e o `cgi`, que parseava, saiu no Python 3.13. De brinde
+    isso da barra de progresso por arquivo no front sem esforco nenhum.
+    """
+    slug, chapter, filename = groups
+    name = safe_page_name(filename)
+    if name is None:
+        raise Invalid(f"nome de pagina inaceitavel: {filename!r}")
+
+    _, incoming = _chapter_paths(ctx.cfg, slug, chapter)
+    if not incoming.is_dir():
+        raise Invalid("area de espera nao existe; crie o capitulo antes")
+
+    # Pelos bytes, e nao pela extensao: gravar um executavel chamado `1.jpg` na
+    # biblioteca seria acreditar no nome que o cliente escolheu.
+    if image_suffix(body) is None:
+        raise Invalid(f"{name!r} nao e jpeg, png, webp nem bmp")
+
+    existing = _incoming_files(incoming)
+    if len(existing) >= MAX_PAGES_PER_CHAPTER and not (incoming / name).exists():
+        raise Invalid(
+            f"{len(existing)} paginas na area de espera; o teto e {MAX_PAGES_PER_CHAPTER}"
+        )
+
+    (incoming / name).write_bytes(body)
+    return HTTPStatus.OK, {"file": name, "bytes": len(body)}
+
+
+def _put_archive(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    """Extrai um zip/cbz inteiro na area de espera.
+
+    Falha apaga a area de espera toda: meio zip extraido e pior que zip nenhum,
+    porque parece capitulo e o `commit` aceitaria.
+    """
+    slug, chapter = groups
+    _, incoming = _chapter_paths(ctx.cfg, slug, chapter)
+    if not incoming.is_dir():
+        raise Invalid("area de espera nao existe; crie o capitulo antes")
+
+    try:
+        names = extract_archive(body, incoming)
+    except Exception:
+        shutil.rmtree(incoming, ignore_errors=True)
+        raise
+
+    return HTTPStatus.OK, {"files": names, "count": len(names)}
+
+
+def _get_incoming(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    """O que ja subiu, na ordem que vai valer na leitura."""
+    _, incoming = _chapter_paths(ctx.cfg, groups[0], groups[1])
+    files = _incoming_files(incoming)
+    return HTTPStatus.OK, {
+        "exists": incoming.is_dir(),
+        "files": [path.name for path in files],
+        "bytes": sum(path.stat().st_size for path in files),
+    }
+
+
+def _delete_incoming(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    """Descarta a area de espera.
+
+    E a unica remocao que o painel faz, e so apaga o que ele proprio escreveu.
+    """
+    _, incoming = _chapter_paths(ctx.cfg, groups[0], groups[1])
+    if not incoming.is_dir():
+        raise Invalid("nao ha area de espera para descartar")
+
+    removed = len(_incoming_files(incoming))
+    shutil.rmtree(incoming)
+    return HTTPStatus.OK, {"removed": removed}
+
+
+def _commit_chapter(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    """Promove a area de espera a capitulo.
+
+    O rename e o unico instante em que o capitulo passa a existir para o resto do
+    sistema: ate aqui `discover_chapters` nao o enxerga, entao upload interrompido
+    nunca vira meio capitulo traduzido.
+    """
+    chapter, incoming = _chapter_paths(ctx.cfg, groups[0], groups[1])
+    files = _incoming_files(incoming)
+    if not files:
+        raise Invalid("area de espera vazia; nao ha o que promover")
+    if chapter.exists():
+        return HTTPStatus.CONFLICT, {"error": f"capitulo {chapter.name!r} ja existe"}
+
+    incoming.rename(chapter)
+    return HTTPStatus.OK, {"chapter": chapter.name, "files": [path.name for path in files]}
+
+
+# ---------- jobs ----------
+
+
+def _create_job(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    """Poe um capitulo para processar e devolve na hora.
+
+    202 e nao 200: o trabalho leva minutos e o que volta e um recibo, nao o
+    resultado. Quem chamou pergunta o progresso em `GET /api/jobs/<id>`.
+    """
+    payload = json_body(body)
+    if not isinstance(payload, dict):
+        raise Invalid("esperava um objeto com series, chapter e engine")
+
+    series = str(payload.get("series", ""))
+    chapter = str(payload.get("chapter", ""))
+    engine = str(payload.get("engine", "")) or ctx.cfg.translation.engine
+    if engine not in available_engines():
+        raise Invalid(f"motor {engine!r} nao existe; ha {', '.join(available_engines())}")
+
+    directory, _ = _chapter_paths(ctx.cfg, series, chapter)
+    if not directory.is_dir():
+        raise Invalid(f"capitulo {series}/{chapter} nao existe; promova a area de espera antes")
+
+    try:
+        job = ctx.jobs.start(
+            ctx.cfg,
+            series=directory.parent.name,
+            chapter=directory.name,
+            engine=engine,
+            force=bool(payload.get("force")),
+            dry_run=bool(payload.get("dry_run")),
+        )
+    except Busy as error:
+        return HTTPStatus.CONFLICT, {"error": str(error)}
+
+    return HTTPStatus.ACCEPTED, {"job_id": job.id, "job": job.snapshot()}
+
+
+def _list_jobs(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    return HTTPStatus.OK, {"jobs": [job.snapshot() for job in ctx.jobs.recent()]}
+
+
+def _get_job(ctx: Context, groups: tuple[str, ...], body: bytes) -> tuple[int, object]:
+    job = ctx.jobs.get(groups[0])
+    if job is None:
+        return HTTPStatus.NOT_FOUND, {"error": f"job {groups[0]!r} nao existe neste processo"}
+    return HTTPStatus.OK, job.snapshot()
 
 
 _SLUG = r"([^/]+)"
@@ -357,12 +652,61 @@ _SLUG = r"([^/]+)"
 ROUTES: tuple[Route, ...] = (
     Route("GET", re.compile(r"^/api/health$"), _health),
     Route("GET", re.compile(r"^/api/series$"), _series),
-    Route("POST", re.compile(r"^/api/series$"), _create_series),
+    Route("POST", re.compile(r"^/api/series$"), _create_series, body_required=True),
     Route("GET", re.compile(rf"^/api/series/{_SLUG}/series\.json$"), _get_series_meta),
-    Route("PUT", re.compile(rf"^/api/series/{_SLUG}/series\.json$"), _put_series_meta),
-    Route("PUT", re.compile(rf"^/api/series/{_SLUG}/cover$"), _put_cover, MAX_PAGE_BYTES),
+    Route(
+        "PUT",
+        re.compile(rf"^/api/series/{_SLUG}/series\.json$"),
+        _put_series_meta,
+        body_required=True,
+    ),
+    Route(
+        "PUT",
+        re.compile(rf"^/api/series/{_SLUG}/cover$"),
+        _put_cover,
+        MAX_PAGE_BYTES,
+        body_required=True,
+    ),
     Route("GET", re.compile(rf"^/api/series/{_SLUG}/glossary$"), _get_glossary),
-    Route("PUT", re.compile(rf"^/api/series/{_SLUG}/glossary$"), _put_glossary),
+    Route(
+        "PUT",
+        re.compile(rf"^/api/series/{_SLUG}/glossary$"),
+        _put_glossary,
+        body_required=True,
+    ),
+    Route(
+        "POST",
+        re.compile(rf"^/api/series/{_SLUG}/chapters$"),
+        _create_chapter,
+    ),
+    Route(
+        "PUT",
+        re.compile(rf"^/api/series/{_SLUG}/chapters/{_SLUG}/files/{_SLUG}$"),
+        _put_page,
+        MAX_PAGE_BYTES,
+        body_required=True,
+    ),
+    Route(
+        "POST",
+        re.compile(rf"^/api/series/{_SLUG}/chapters/{_SLUG}/archive$"),
+        _put_archive,
+        MAX_ARCHIVE_BYTES,
+        body_required=True,
+    ),
+    Route(
+        "POST",
+        re.compile(rf"^/api/series/{_SLUG}/chapters/{_SLUG}/commit$"),
+        _commit_chapter,
+    ),
+    Route("GET", re.compile(rf"^/api/series/{_SLUG}/chapters/{_SLUG}/incoming$"), _get_incoming),
+    Route("GET", re.compile(r"^/api/jobs$"), _list_jobs),
+    Route("POST", re.compile(r"^/api/jobs$"), _create_job, body_required=True),
+    Route("GET", re.compile(rf"^/api/jobs/{_SLUG}$"), _get_job),
+    Route(
+        "DELETE",
+        re.compile(rf"^/api/series/{_SLUG}/chapters/{_SLUG}/incoming$"),
+        _delete_incoming,
+    ),
 )
 
 
@@ -395,12 +739,17 @@ def match_route(method: str, path: str) -> RouteMatch | None:
 # ---------- ligacao HTTP ----------
 
 
-def make_panel_handler(cfg: Config) -> type[ReaderHandler]:
+def make_panel_handler(cfg: Config, jobs: JobRegistry | None = None) -> type[ReaderHandler]:
     """Handler que serve o leitor e, para a propria maquina, tambem o painel.
 
     Estende o `ReaderHandler`: pedido que nao casa com `/api/` cai no `super()` e
     e servido como arquivo, exatamente como antes.
+
+    `jobs` existe para o teste poder trocar o registro por um que nao dispara o
+    pipeline de verdade. Em producao o default e o unico caminho.
     """
+
+    context = Context(cfg=cfg, jobs=jobs or JobRegistry())
 
     class PanelHandler(ReaderHandler):
         def __init__(self, *args: object, **kwargs: object) -> None:
@@ -451,12 +800,12 @@ def make_panel_handler(cfg: Config) -> type[ReaderHandler]:
                 )
                 return True
 
-            body = self._read_body(method, match.route.max_body)
+            body = self._read_body(match.route)
             if body is None:
                 return True
 
             try:
-                status, payload = match.route.handler(cfg, match.groups, body)
+                status, payload = match.route.handler(context, match.groups, body)
             except Invalid as error:
                 self._send_json(HTTPStatus.UNPROCESSABLE_ENTITY, {"error": str(error)})
                 return True
@@ -468,7 +817,7 @@ def make_panel_handler(cfg: Config) -> type[ReaderHandler]:
             self._send_json(status, payload)
             return True
 
-        def _read_body(self, method: str, limit: int) -> bytes | None:
+        def _read_body(self, route: Route) -> bytes | None:
             """O corpo cru, ou None quando ja respondeu recusando.
 
             `http.server` nao decodifica `Transfer-Encoding: chunked` e o `cgi`,
@@ -485,7 +834,7 @@ def make_panel_handler(cfg: Config) -> type[ReaderHandler]:
 
             raw = self.headers.get("Content-Length")
             if raw is None:
-                if method in {"POST", "PUT"}:
+                if route.body_required:
                     self._send_json(HTTPStatus.LENGTH_REQUIRED, {"error": "mande Content-Length"})
                     return None
                 return b""
@@ -496,10 +845,10 @@ def make_panel_handler(cfg: Config) -> type[ReaderHandler]:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Content-Length nao e numero"})
                 return None
 
-            if length > limit:
+            if length > route.max_body:
                 self._send_json(
                     HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                    {"error": f"corpo de {length} bytes; o teto desta rota e {limit}"},
+                    {"error": f"corpo de {length} bytes; o teto desta rota e {route.max_body}"},
                 )
                 return None
             return self.rfile.read(length)

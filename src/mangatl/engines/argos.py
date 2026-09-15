@@ -19,7 +19,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from ..config import Config
-from ..models import ExtractedPage, TranslatedBlock, TranslatedPage
+from ..models import ExtractedPage, Progress, ProgressFn, TranslatedBlock, TranslatedPage, report
 from .base import TranslationError
 
 log = logging.getLogger("mangatl.argos")
@@ -118,12 +118,23 @@ class ArgosEngine:
         pages: Sequence[ExtractedPage],
         glossary: Mapping[str, str],
         chapter_dir: Path,
+        progress: ProgressFn | None = None,
     ) -> list[TranslatedPage]:
         log.info(
             "operation=translate_chapter engine=free pages=%d sees_images=False",
             len(pages),
         )
-        return [self._translate_page(page, glossary) for page in pages]
+        # Pagina a pagina porque e assim que este motor trabalha: ele nao ve a
+        # imagem e traduz cada fala isolada, entao a pagina e a menor unidade que
+        # conclui alguma coisa.
+        translated = []
+        for index, page in enumerate(pages, start=1):
+            translated.append(self._translate_page(page, glossary))
+            report(
+                progress,
+                Progress(phase="translate", done=index, total=len(pages), detail=page.image),
+            )
+        return translated
 
     def _translate_page(self, page: ExtractedPage, glossary: Mapping[str, str]) -> TranslatedPage:
         blocks = []

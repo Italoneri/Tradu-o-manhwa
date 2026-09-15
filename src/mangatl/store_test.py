@@ -16,8 +16,10 @@ from .models import (
     TranslatedPage,
 )
 from .store import (
+    SOURCE_DIRNAME,
     build_library,
     discover_chapters,
+    discover_series,
     find_cover,
     image_sha256,
     is_page_current,
@@ -297,3 +299,110 @@ def test_reports_no_cover_when_nothing_has_one(cfg: Config):
 
     assert library.series[0].cover is None
     assert library.series[0].chapters[0].cover is None
+
+
+# ---------- a verdade do disco, que e outra pergunta ----------
+
+
+def test_lists_a_series_that_has_no_chapter_yet(cfg: Config):
+    # E o primeiro estado de toda serie criada pelo painel: a tela precisa lista-la
+    # justamente para voce escolher onde subir o primeiro capitulo.
+    (cfg.library_dir / "serie-nova").mkdir(parents=True)
+
+    states = discover_series(cfg)
+
+    assert [state.series for state in states] == ["serie-nova"]
+    assert states[0].chapters == ()
+
+
+def test_lists_a_chapter_that_was_sent_but_not_translated(cfg: Config):
+    # O estado normal entre o upload e o botao de traduzir.
+    write_pages(cfg, "serie", "001", ["1.jpg", "2.jpg"])
+
+    chapter = discover_series(cfg)[0].chapters[0]
+
+    assert chapter.chapter == "001"
+    assert chapter.image_count == 2
+    assert chapter.engines == ()
+    assert chapter.incoming is False
+
+
+def test_lists_every_engine_a_chapter_was_translated_by(cfg: Config):
+    write_pages(cfg, "serie", "001", ["1.jpg"])
+    save_chapter(cfg, chapter_for("serie", "001", "free"))
+    save_chapter(cfg, chapter_for("serie", "001", "claude"))
+
+    assert discover_series(cfg)[0].chapters[0].engines == ("claude", "free")
+
+
+def test_marks_a_chapter_with_an_open_upload(cfg: Config):
+    write_pages(cfg, "serie", "001", ["1.jpg"])
+    (cfg.library_dir / "serie" / "001.incoming").mkdir()
+
+    chapter = discover_series(cfg)[0].chapters[0]
+
+    assert chapter.chapter == "001"
+    assert chapter.incoming is True
+
+
+def test_lists_a_chapter_that_only_exists_as_an_interrupted_upload(cfg: Config):
+    # Sem isso a tela nao teria como oferecer "continuar upload interrompido".
+    (cfg.library_dir / "serie" / "002.incoming").mkdir(parents=True)
+
+    chapter = discover_series(cfg)[0].chapters[0]
+
+    assert chapter.chapter == "002"
+    assert chapter.image_count == 0
+    assert chapter.incoming is True
+
+
+def test_keeps_the_archived_capture_from_becoming_a_chapter(cfg: Config):
+    # `_source/` e a captura original que o fatiamento guardou, nao um capitulo.
+    write_pages(cfg, "serie", "001", ["1.jpg"])
+    (cfg.library_dir / "serie" / SOURCE_DIRNAME).mkdir()
+
+    assert [c.chapter for c in discover_series(cfg)[0].chapters] == ["001"]
+
+
+def test_orders_chapters_naturally_not_lexicographically(cfg: Config):
+    for chapter in ("10", "2", "1"):
+        write_pages(cfg, "serie", chapter, ["1.jpg"])
+
+    assert [c.chapter for c in discover_series(cfg)[0].chapters] == ["1", "2", "10"]
+
+
+def test_counts_images_and_not_translated_pages(cfg: Config):
+    """Os dois numeros divergem de proposito: 3 capturas viram 155 fatias."""
+    write_pages(cfg, "serie", "001", ["1.jpg", "2.jpg", "3.jpg"])
+    save_chapter(cfg, chapter_for("serie", "001", "free"))
+
+    state = discover_series(cfg)[0]
+    library = build_library(cfg)
+
+    assert state.chapters[0].image_count == 3
+    assert library.series[0].chapters[0].page_count == 1
+
+
+def test_takes_the_display_title_from_series_json(cfg: Config):
+    write_pages(cfg, "serie", "001", ["1.jpg"])
+    (cfg.library_dir / "serie" / "series.json").write_text(
+        json.dumps({"title": "O Titulo Bonito"}), encoding="utf-8"
+    )
+
+    assert discover_series(cfg)[0].title == "O Titulo Bonito"
+
+
+def test_keeps_an_untranslated_series_out_of_the_reader_index(cfg: Config):
+    # A mesma pasta responde presente para o painel e ausente para o leitor.
+    write_pages(cfg, "serie", "001", ["1.jpg"])
+
+    assert len(discover_series(cfg)) == 1
+    assert build_library(cfg).series == ()
+
+
+def test_keeps_an_open_upload_out_of_the_chapters_to_process(cfg: Config):
+    """Senao o process-all traduz a metade que chegou e a numeracao sai errada."""
+    write_pages(cfg, "serie", "001", ["1.jpg"])
+    write_pages(cfg, "serie", "002.incoming", ["1.jpg"])
+
+    assert list(discover_chapters(cfg)) == [("serie", "001")]

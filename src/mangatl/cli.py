@@ -18,6 +18,7 @@ from .detectors.base import (
     available_detectors,
 )
 from .engines.base import TranslationError, UnknownEngineError, available_engines, create_engine
+from .models import Progress, ProgressFn
 from .panel import serve_panel
 from .pipeline import ChapterNotFoundError, extract_chapter, translate_chapter
 from .slicing import is_tall, slice_stream
@@ -62,6 +63,24 @@ def _resolve_chapter(cfg: Config, target: str) -> tuple[str, str]:
     return relative.parts[0], relative.parts[1]
 
 
+def _progress_printer() -> ProgressFn:
+    """Uma linha que se reescreve, para o terminal ganhar progresso sem virar log.
+
+    O pipeline ja logava pagina a pagina em `--verbose`, mas so la; quem roda sem
+    a flag ficava minutos olhando um cursor parado.
+    """
+    seen: list[str] = []
+
+    def show(update: Progress) -> None:
+        if seen and seen[-1] != update.phase:
+            typer.echo("")
+        seen.append(update.phase)
+        counted = f"{update.done}/{update.total}" if update.total else ""
+        typer.echo(f"\r  {update.phase:<9} {counted:>9}  {update.detail[:46]:<46}", nl=False)
+
+    return show
+
+
 def _process_one(
     cfg: Config,
     series: str,
@@ -73,9 +92,17 @@ def _process_one(
     debug_boxes: bool,
     dry_run: bool,
 ) -> None:
+    progress = _progress_printer()
     report = extract_chapter(
-        cfg, series, chapter, force=force, debug_boxes=debug_boxes, detector_name=detector_name
+        cfg,
+        series,
+        chapter,
+        force=force,
+        debug_boxes=debug_boxes,
+        detector_name=detector_name,
+        progress=progress,
     )
+    typer.echo("")
     typer.secho(
         f"{series}/{chapter}: {len(report.extraction.pages)} paginas "
         f"({report.extracted_pages} extraidas, {report.reused_pages} reaproveitadas), "
@@ -90,7 +117,8 @@ def _process_one(
         return
 
     engine = create_engine(engine_name, cfg)
-    result = translate_chapter(cfg, report.extraction, engine)
+    result = translate_chapter(cfg, report.extraction, engine, progress)
+    typer.echo("")
     lines = sum(len(page.blocks) for page in result.pages)
     typer.secho(f"  traduzido com '{engine.name}': {lines} falas", fg=typer.colors.GREEN)
 

@@ -30,14 +30,13 @@ import cv2
 import numpy as np
 
 from .config import SlicingConfig
+from .store import SOURCE_DIRNAME
 
 log = logging.getLogger("mangatl.slicing")
 
 INK_THRESHOLD = 100
 """Abaixo disso o pixel conta como tinta. Mesmo criterio de detect.py."""
 
-SOURCE_DIRNAME = "_source"
-"""Onde a captura original vai parar depois de fatiada."""
 
 
 def is_tall(width: int, height: int, cfg: SlicingConfig) -> bool:

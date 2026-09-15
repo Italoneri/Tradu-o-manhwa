@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import json
 import threading
+import zipfile
 from http.client import HTTPConnection
 from pathlib import Path
 
@@ -12,6 +14,9 @@ from .panel import (
     MAX_JSON_BYTES,
     ROUTES,
     Invalid,
+    extract_archive,
+    next_chapter_name,
+    safe_archive_entries,
     image_suffix,
     is_local_client,
     json_body,
@@ -276,13 +281,37 @@ def test_never_answers_with_the_api_key(panel_server: int):
     assert b"sk-" not in body
 
 
-def test_builds_the_library_from_disk(panel_server: int):
+def test_lists_the_disk_and_not_the_reader_index(panel_server: int, tmp_path: Path):
+    # Uma serie com capitulo enviado e nao traduzido: o painel precisa ve-la para
+    # oferecer o botao que a traduz, e o leitor nao pode lista-la porque nao ha o
+    # que abrir.
+    chapter = tmp_path / "library" / "Obra" / "001"
+    chapter.mkdir(parents=True)
+    (chapter / "1.jpg").write_bytes(b"0")
+
     status, body = _get(panel_server, "/api/series")
     payload = json.loads(body)
 
     assert status == 200
-    assert payload["series"] == []
-    assert payload["library_base"] == "library"
+    assert [s["series"] for s in payload["series"]] == ["Obra"]
+    assert payload["series"][0]["chapters"][0]["image_count"] == 1
+    assert payload["series"][0]["chapters"][0]["engines"] == []
+
+
+def test_lists_an_empty_library_as_empty(panel_server: int):
+    status, body = _get(panel_server, "/api/series")
+
+    assert status == 200
+    assert json.loads(body)["series"] == []
+
+
+def test_shows_a_series_created_by_the_panel_right_away(panel_server: int):
+    # Sem isso a tela criaria a serie e ela sumiria ate ter capitulo traduzido.
+    _send(panel_server, "POST", "/api/series", json.dumps({"slug": "Recem-criada"}).encode("utf-8"))
+
+    _, body = _get(panel_server, "/api/series")
+
+    assert [s["series"] for s in json.loads(body)["series"]] == ["Recem-criada"]
 
 
 def test_keeps_serving_the_reader_next_to_the_panel(panel_server: int):
@@ -449,3 +478,407 @@ def test_shows_the_title_from_series_json(panel_server: int, tmp_path: Path):
 
     assert status == 200
     assert json.loads(body)["title"] == "O Titulo Bonito"
+
+
+# ---------- area de espera e upload ----------
+
+
+@pytest.mark.parametrize(
+    ("name", "existing", "expected"),
+    [
+        ("serie sem capitulo nenhum", [], "001"),
+        ("segue a largura que a serie usa", ["001"], "002"),
+        ("passa a dezena sem perder a largura", ["009"], "010"),
+        ("passa a centena e cresce", ["999"], "1000"),
+        ("pega o maior e nao o ultimo", ["003", "001", "002"], "004"),
+        ("ordena por numero e nao por texto", ["2", "10"], "11"),
+        ("ignora capitulo com nome solto", ["extra", "001"], "002"),
+        ("so nomes soltos voltam ao inicio", ["extra", "especial"], "001"),
+    ],
+)
+def test_suggests_the_next_chapter_number(name: str, existing: list[str], expected: str):
+    assert next_chapter_name(existing) == expected, name
+
+
+def test_pairs_each_archive_entry_with_its_position():
+    # Quem extrai precisa voltar ao ZipInfo: o nome-base sozinho nao diz de qual
+    # entrada ele veio.
+    entries = safe_archive_entries(["leiame.txt", "cap/2.jpg", "cap/1.jpg"])
+
+    assert entries == [(1, "2.jpg"), (2, "1.jpg")]
+
+
+def zip_of(entries: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, data in entries.items():
+            archive.writestr(name, data)
+    return buffer.getvalue()
+
+
+def test_extracts_pages_by_their_base_name(tmp_path: Path):
+    target = tmp_path / "espera"
+    target.mkdir()
+
+    names = extract_archive(zip_of({"cap/10.jpg": JPEG, "cap/2.jpg": JPEG}), target)
+
+    assert names == ["2.jpg", "10.jpg"], "a ordem devolvida ja e a de leitura"
+    assert sorted(p.name for p in target.iterdir()) == ["10.jpg", "2.jpg"]
+
+
+def test_extracts_nothing_from_an_archive_with_an_escape_path(tmp_path: Path):
+    target = tmp_path / "espera"
+    target.mkdir()
+
+    with pytest.raises(Invalid, match="caminho de fuga"):
+        extract_archive(zip_of({"1.jpg": JPEG, "../../.env": b"CHAVE=1"}), target)
+
+    assert list(target.iterdir()) == [], "o veto vem antes de qualquer byte sair"
+    assert not (tmp_path.parent / ".env").exists()
+
+
+def test_refuses_an_archive_with_two_pages_of_the_same_name(tmp_path: Path):
+    # Gravar pelo nome-base faria uma apagar a outra, em silencio.
+    target = tmp_path / "espera"
+    target.mkdir()
+
+    with pytest.raises(Invalid, match="mesmo nome de pagina"):
+        extract_archive(zip_of({"a/1.jpg": JPEG, "b/1.jpg": PNG}), target)
+
+
+def test_refuses_something_that_is_not_an_archive(tmp_path: Path):
+    target = tmp_path / "espera"
+    target.mkdir()
+
+    with pytest.raises(Invalid, match="nao e um zip"):
+        extract_archive(b"nao sou zip", target)
+
+
+def test_refuses_an_archive_without_a_single_image(tmp_path: Path):
+    target = tmp_path / "espera"
+    target.mkdir()
+
+    with pytest.raises(Invalid, match="nenhuma imagem"):
+        extract_archive(zip_of({"leiame.txt": b"oi"}), target)
+
+
+def series_with(port: int, slug: str = "Obra") -> str:
+    _send(port, "POST", "/api/series", json.dumps({"slug": slug}).encode("utf-8"))
+    return slug
+
+
+def test_suggests_the_chapter_number_when_the_body_is_empty(panel_server: int, tmp_path: Path):
+    slug = series_with(panel_server)
+    (tmp_path / "library" / slug / "001").mkdir()
+
+    status, body = _send(panel_server, "POST", f"/api/series/{slug}/chapters", b"")
+
+    assert status == 201
+    assert json.loads(body)["chapter"] == "002"
+
+
+def test_opens_the_staging_area_and_not_the_chapter(panel_server: int, tmp_path: Path):
+    slug = series_with(panel_server)
+
+    _send(panel_server, "POST", f"/api/series/{slug}/chapters", json.dumps({"chapter": "007"}).encode())
+
+    assert (tmp_path / "library" / slug / "007.incoming").is_dir()
+    assert not (tmp_path / "library" / slug / "007").exists()
+
+
+def test_refuses_to_stage_over_a_chapter_that_exists(panel_server: int, tmp_path: Path):
+    slug = series_with(panel_server)
+    (tmp_path / "library" / slug / "001").mkdir()
+
+    status, _ = _send(
+        panel_server, "POST", f"/api/series/{slug}/chapters", json.dumps({"chapter": "001"}).encode()
+    )
+
+    assert status == 409
+
+
+def stage(port: int, slug: str, chapter: str) -> None:
+    _send(port, "POST", f"/api/series/{slug}/chapters", json.dumps({"chapter": chapter}).encode())
+
+
+def test_writes_a_page_into_the_staging_area(panel_server: int, tmp_path: Path):
+    slug = series_with(panel_server)
+    stage(panel_server, slug, "001")
+
+    status, body = _send(panel_server, "PUT", f"/api/series/{slug}/chapters/001/files/1.jpg", JPEG)
+
+    assert status == 200
+    assert json.loads(body)["file"] == "1.jpg"
+    assert (tmp_path / "library" / slug / "001.incoming" / "1.jpg").read_bytes() == JPEG
+
+
+def test_refuses_a_page_that_is_not_an_image(panel_server: int):
+    slug = series_with(panel_server)
+    stage(panel_server, slug, "001")
+
+    status, body = _send(
+        panel_server, "PUT", f"/api/series/{slug}/chapters/001/files/1.jpg", b"MZ" + b"0" * 40
+    )
+
+    assert status == 422
+    assert b"nao e jpeg" in body
+
+
+@pytest.mark.parametrize("filename", ["..%2F..%2F.env", "1.exe", ".oculta.jpg"])
+def test_refuses_a_hostile_page_name(panel_server: int, filename: str):
+    slug = series_with(panel_server)
+    stage(panel_server, slug, "001")
+
+    status, _ = _send(
+        panel_server, "PUT", f"/api/series/{slug}/chapters/001/files/{filename}", JPEG
+    )
+
+    assert status == 422
+
+
+def test_reports_the_staging_area_in_reading_order(panel_server: int):
+    slug = series_with(panel_server)
+    stage(panel_server, slug, "001")
+    for name in ("10.jpg", "2.jpg", "1.jpg"):
+        _send(panel_server, "PUT", f"/api/series/{slug}/chapters/001/files/{name}", JPEG)
+
+    status, body = _send(panel_server, "GET", f"/api/series/{slug}/chapters/001/incoming")
+    payload = json.loads(body)
+
+    assert status == 200
+    assert payload["files"] == ["1.jpg", "2.jpg", "10.jpg"]
+    assert payload["bytes"] == 3 * len(JPEG)
+
+
+def test_extracts_an_archive_into_the_staging_area(panel_server: int, tmp_path: Path):
+    slug = series_with(panel_server)
+    stage(panel_server, slug, "001")
+
+    status, body = _send(
+        panel_server,
+        "POST",
+        f"/api/series/{slug}/chapters/001/archive",
+        zip_of({"cap/1.jpg": JPEG, "cap/2.png": PNG}),
+    )
+
+    assert status == 200
+    assert json.loads(body)["files"] == ["1.jpg", "2.png"]
+    assert (tmp_path / "library" / slug / "001.incoming" / "1.jpg").is_file()
+
+
+def test_throws_away_the_staging_area_when_an_archive_fails(panel_server: int, tmp_path: Path):
+    # Meio zip extraido e pior que zip nenhum: parece capitulo e o commit aceitaria.
+    slug = series_with(panel_server)
+    stage(panel_server, slug, "001")
+
+    status, body = _send(
+        panel_server,
+        "POST",
+        f"/api/series/{slug}/chapters/001/archive",
+        zip_of({"1.jpg": JPEG, "../../.env": b"CHAVE=1"}),
+    )
+
+    assert status == 422
+    assert b"caminho de fuga" in body
+    assert not (tmp_path / "library" / slug / "001.incoming").exists()
+
+
+def test_promotes_the_staging_area_to_a_chapter(panel_server: int, tmp_path: Path):
+    slug = series_with(panel_server)
+    stage(panel_server, slug, "001")
+    _send(panel_server, "PUT", f"/api/series/{slug}/chapters/001/files/1.jpg", JPEG)
+
+    status, body = _send(panel_server, "POST", f"/api/series/{slug}/chapters/001/commit")
+
+    assert status == 200
+    assert json.loads(body)["files"] == ["1.jpg"]
+    assert (tmp_path / "library" / slug / "001" / "1.jpg").is_file()
+    assert not (tmp_path / "library" / slug / "001.incoming").exists()
+
+
+def test_refuses_to_promote_an_empty_staging_area(panel_server: int):
+    slug = series_with(panel_server)
+    stage(panel_server, slug, "001")
+
+    status, body = _send(panel_server, "POST", f"/api/series/{slug}/chapters/001/commit")
+
+    assert status == 422
+    assert b"vazia" in body
+
+
+def test_refuses_to_promote_over_a_chapter_that_exists(panel_server: int, tmp_path: Path):
+    slug = series_with(panel_server)
+    incoming = tmp_path / "library" / slug / "001.incoming"
+    incoming.mkdir(parents=True)
+    (incoming / "1.jpg").write_bytes(JPEG)
+    (tmp_path / "library" / slug / "001").mkdir()
+
+    status, _ = _send(panel_server, "POST", f"/api/series/{slug}/chapters/001/commit")
+
+    assert status == 409
+
+
+def test_discards_the_staging_area_on_request(panel_server: int, tmp_path: Path):
+    slug = series_with(panel_server)
+    stage(panel_server, slug, "001")
+    _send(panel_server, "PUT", f"/api/series/{slug}/chapters/001/files/1.jpg", JPEG)
+
+    status, body = _send(panel_server, "DELETE", f"/api/series/{slug}/chapters/001/incoming")
+
+    assert status == 200
+    assert json.loads(body)["removed"] == 1
+    assert not (tmp_path / "library" / slug / "001.incoming").exists()
+
+
+def test_keeps_the_staging_area_out_of_the_reader_index(panel_server: int, tmp_path: Path):
+    # E o bug que a area de espera existe para evitar: upload interrompido virando
+    # capitulo para o process-all.
+    slug = series_with(panel_server)
+    stage(panel_server, slug, "001")
+    _send(panel_server, "PUT", f"/api/series/{slug}/chapters/001/files/1.jpg", JPEG)
+
+    _, body = _get(panel_server, "/api/series")
+    chapters = json.loads(body)["series"][0]["chapters"]
+
+    assert [c["chapter"] for c in chapters] == ["001"]
+    assert chapters[0]["incoming"] is True
+    assert chapters[0]["image_count"] == 0, "o que esta na area de espera ainda nao e pagina"
+
+
+# ---------- jobs ----------
+
+
+@pytest.fixture
+def panel_with_jobs(tmp_path: Path):
+    """Painel com um registro que nao dispara pipeline nenhum.
+
+    Rodar o pipeline de verdade num teste de rota pediria imagens, Tesseract e o
+    detector; o que estas rotas precisam provar e outra coisa - que aceitam,
+    recusam e respondem o estado certo.
+    """
+    from .jobs_test import FakeRegistry
+
+    (tmp_path / "library" / "Obra" / "001").mkdir(parents=True)
+    (tmp_path / "reader").mkdir()
+    registry = FakeRegistry()
+
+    cfg = Config(root=tmp_path)
+    with _Server(("127.0.0.1", 0), make_panel_handler(cfg, registry)) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield httpd.server_address[1], registry
+        finally:
+            registry.release.set()
+            httpd.shutdown()
+            thread.join(timeout=5)
+
+
+def post_job(port: int, **fields: object) -> tuple[int, bytes]:
+    payload = {"series": "Obra", "chapter": "001", "engine": "free", **fields}
+    return _send(port, "POST", "/api/jobs", json.dumps(payload).encode("utf-8"))
+
+
+def test_accepts_the_job_and_answers_before_it_finishes(panel_with_jobs):
+    # 202 e nao 200: o que volta e um recibo, nao o resultado.
+    port, registry = panel_with_jobs
+
+    status, body = post_job(port)
+    payload = json.loads(body)
+
+    assert status == 202
+    assert payload["job"]["state"] == "running"
+    assert registry.get(payload["job_id"]) is not None
+
+
+def test_refuses_a_second_job_with_a_readable_conflict(panel_with_jobs):
+    port, registry = panel_with_jobs
+    post_job(port)
+
+    status, body = post_job(port)
+
+    assert status == 409
+    assert b"ja ha um processamento" in body
+
+
+def test_refuses_an_engine_that_does_not_exist(panel_with_jobs):
+    port, _ = panel_with_jobs
+
+    status, body = post_job(port, engine="tradutor-magico")
+
+    assert status == 422
+    assert b"nao existe" in body
+
+
+def test_refuses_a_chapter_that_was_never_committed(panel_with_jobs):
+    # Area de espera nao e capitulo: processar meio upload e o que ela evita.
+    port, _ = panel_with_jobs
+
+    status, body = post_job(port, chapter="999")
+
+    assert status == 422
+    assert b"nao existe" in body
+
+
+def test_reports_the_progress_of_a_running_job(panel_with_jobs):
+    port, registry = panel_with_jobs
+    job_id = json.loads(post_job(port)[1])["job_id"]
+
+    assert wait_for(lambda: registry.get(job_id).progress.total == 2)
+
+    status, body = _send(port, "GET", f"/api/jobs/{job_id}")
+    payload = json.loads(body)
+
+    assert status == 200
+    assert payload["progress"] == {
+        "phase": "extract",
+        "done": 1,
+        "total": 2,
+        "detail": "fingindo",
+    }
+
+
+def test_reports_the_job_as_done_with_its_log(panel_with_jobs):
+    port, registry = panel_with_jobs
+    job_id = json.loads(post_job(port)[1])["job_id"]
+    registry.release.set()
+
+    assert wait_for(lambda: registry.get(job_id).state == "done")
+
+    payload = json.loads(_send(port, "GET", f"/api/jobs/{job_id}")[1])
+
+    assert payload["state"] == "done"
+    assert payload["finished_at"] is not None
+    assert any("linha que o job coletou" in line for line in payload["log"])
+
+
+def test_lists_the_jobs_newest_first(panel_with_jobs):
+    port, registry = panel_with_jobs
+    registry.release.set()
+    first = json.loads(post_job(port)[1])["job_id"]
+    assert wait_for(lambda: registry.get(first).state == "done")
+    second = json.loads(post_job(port)[1])["job_id"]
+
+    payload = json.loads(_send(port, "GET", "/api/jobs")[1])
+
+    assert [job["id"] for job in payload["jobs"]] == [second, first]
+
+
+def test_reports_no_job_for_an_id_this_process_never_saw(panel_with_jobs):
+    port, _ = panel_with_jobs
+
+    status, body = _send(port, "GET", "/api/jobs/naoexiste")
+
+    assert status == 404
+    assert b"neste processo" in body
+
+
+def wait_for(condition, timeout: float = 5.0) -> bool:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.01)
+    return False

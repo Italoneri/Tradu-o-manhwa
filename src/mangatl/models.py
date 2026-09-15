@@ -10,6 +10,7 @@ Manter os dois separados e o que permite trocar `--engine` sem rodar OCR de novo
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -23,6 +24,30 @@ BlockKind = Literal["bubble", "free"]
 
 class Frozen(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+class Progress(Frozen):
+    """Onde o processamento esta, para quem quiser mostrar.
+
+    Injetado e nao global: o pipeline ja loga cada pagina, mas raspar log para
+    montar barra de progresso quebra na primeira vez que alguem mexe no texto da
+    mensagem. Quem chama passa uma funcao e decide o que fazer com o numero -
+    o CLI imprime, o painel atualiza o job.
+    """
+
+    phase: Literal["slice", "extract", "translate", "library"]
+    done: int = Field(default=0, ge=0)
+    total: int = Field(default=0, ge=0)
+    detail: str = ""
+
+
+ProgressFn = Callable[[Progress], None]
+
+
+def report(progress: ProgressFn | None, update: Progress) -> None:
+    """Avisa quem estiver ouvindo. Sem ouvinte, nao custa nada."""
+    if progress is not None:
+        progress(update)
 
 
 class BBox(Frozen):
@@ -194,6 +219,42 @@ class ChapterEntry(Frozen):
     engines: tuple[str, ...]
     cover: str | None = None
     """Caminho servivel da capa, relativo a raiz servida. None quando o capitulo nao tem."""
+
+
+class ChapterState(Frozen):
+    """O que existe no disco para um capitulo, traduzido ou nao.
+
+    Irma de `ChapterEntry`, que descreve o que o leitor pode abrir. Sao dois
+    conjuntos diferentes: todo `ChapterEntry` tem um `ChapterState`, o contrario
+    nao vale, e e justamente a diferenca entre os dois que o painel precisa
+    mostrar.
+    """
+
+    chapter: str
+
+    image_count: int = Field(default=0, ge=0)
+    """Imagens em library/<serie>/<cap>/ - NAO e o `page_count` do ChapterEntry.
+
+    Aquele conta paginas do capitulo ja traduzido; este conta arquivos no disco.
+    Os dois divergem de proposito e por muito: tres capturas de rolagem viram 155
+    fatias depois do `slice_chapter_in_place`. Dar o mesmo nome aos dois numeros
+    seria convidar o erro de exibir um achando que e o outro."""
+
+    engines: tuple[str, ...] = ()
+    """Vazio significa "enviado, ainda nao traduzido" - o estado que o painel
+    precisa ver para oferecer o botao de traduzir."""
+
+    incoming: bool = False
+    """Existe `<cap>.incoming/`: upload em andamento ou interrompido."""
+
+
+class SeriesState(Frozen):
+    series: str
+    """O slug, que e o nome da pasta - mesmo nome do campo em SeriesEntry."""
+
+    title: str = ""
+    cover: str | None = None
+    chapters: tuple[ChapterState, ...] = ()
 
 
 class SeriesMeta(Frozen):

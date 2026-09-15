@@ -13,7 +13,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,10 +21,12 @@ from .config import Config
 from .models import (
     Chapter,
     ChapterEntry,
+    ChapterState,
     Extraction,
     Library,
     SeriesEntry,
     SeriesMeta,
+    SeriesState,
 )
 
 IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp", ".bmp"})
@@ -40,6 +41,18 @@ escolher entre duas imagens soltas, e escolheria errado em silencio.
 LIBRARY_FILENAME = "library.json"
 SERIES_FILENAME = "series.json"
 GLOSSARY_FILENAME = "glossary.json"
+SOURCE_DIRNAME = "_source"
+"""Onde a captura original vai parar depois de fatiada.
+
+Mora aqui e nao no `slicing.py` porque e fato de layout de disco, e quem caminha a
+biblioteca precisa saber que essa pasta nao e capitulo. O caminho contrario -
+store importando slicing - arrastaria cv2 para dentro de quem so le diretorio."""
+
+INCOMING_SUFFIX = ".incoming"
+"""Sufixo da area de espera do upload.
+
+Mora aqui porque quem caminha o disco precisa ignorar essas pastas e quem as cria
+precisa escrever o mesmo nome. Duas constantes seria uma divergindo da outra."""
 _DIGITS = re.compile(r"(\d+)")
 
 
@@ -170,7 +183,13 @@ def is_page_current(extraction: Extraction | None, image: Path, pipeline_version
 
 
 def discover_chapters(cfg: Config) -> Iterable[tuple[str, str]]:
-    """Pares (serie, capitulo) presentes na biblioteca de entrada."""
+    """Pares (serie, capitulo) presentes na biblioteca de entrada.
+
+    Area de espera fica de fora. Sem isso um upload interrompido vira capitulo
+    para o `process-all`: ele traduz a metade que chegou e, como o pipeline e
+    idempotente por sha, as paginas que faltavam entram depois sem refazer o
+    resto - mas a numeracao das falas ja saiu errada.
+    """
     if not cfg.library_dir.is_dir():
         return []
     pairs: list[tuple[str, str]] = []
@@ -178,6 +197,8 @@ def discover_chapters(cfg: Config) -> Iterable[tuple[str, str]]:
         if not series_dir.is_dir():
             continue
         for chapter_dir in sorted(series_dir.iterdir(), key=lambda p: _natural_key(p.name)):
+            if chapter_dir.name.endswith(INCOMING_SUFFIX):
+                continue
             if chapter_dir.is_dir() and list_page_images(chapter_dir):
                 pairs.append((series_dir.name, chapter_dir.name))
     return pairs
@@ -199,7 +220,7 @@ def _translated_engines(cfg: Config, series: str, chapter: str) -> tuple[str, ..
 
 
 def _series_cover(
-    cfg: Config, series: str, chapters: Iterable[ChapterEntry], declared: str | None
+    cfg: Config, series: str, chapter_covers: Iterable[str | None], declared: str | None
 ) -> str | None:
     """A capa da serie, da mais explicita para a mais adivinhada.
 
@@ -212,34 +233,119 @@ def _series_cover(
     own = _cover_url(cfg, cfg.library_dir / series)
     if own is not None:
         return own
-    return next((entry.cover for entry in chapters if entry.cover is not None), None)
+    return next((cover for cover in chapter_covers if cover is not None), None)
 
 
-def _series_entry(cfg: Config, series: str, chapters: list[ChapterEntry]) -> SeriesEntry:
-    meta = load_series_meta(cfg, series)
-    return SeriesEntry(
-        series=series,
-        title=meta.title,
-        chapters=tuple(chapters),
-        cover=_series_cover(cfg, series, chapters, meta.cover),
-    )
+def _chapter_names(series_dir: Path) -> tuple[list[str], set[str]]:
+    """Os capitulos da serie e quais deles tem area de espera aberta.
+
+    Um capitulo que so existe como `<cap>.incoming/` entra na lista mesmo assim: e
+    upload interrompido, e so aparecendo e que a tela pode oferecer continuar.
+    """
+    committed: set[str] = set()
+    incoming: set[str] = set()
+    for entry in series_dir.iterdir():
+        if not entry.is_dir() or entry.name == SOURCE_DIRNAME:
+            continue
+        if entry.name.endswith(INCOMING_SUFFIX):
+            incoming.add(entry.name.removesuffix(INCOMING_SUFFIX))
+        else:
+            committed.add(entry.name)
+    return sorted(committed | incoming, key=_natural_key), incoming
+
+
+def discover_series(cfg: Config) -> tuple[SeriesState, ...]:
+    """Toda serie em library/, com todo capitulo, traduzido ou nao.
+
+    Percorre `library_dir` direto em vez de passar por `discover_chapters`, que so
+    devolve par (serie, capitulo) e por isso nao tem como representar serie sem
+    capitulo nenhum - que e o primeiro estado de toda serie criada pelo painel.
+    """
+    if not cfg.library_dir.is_dir():
+        return ()
+
+    states: list[SeriesState] = []
+    for series_dir in sorted(cfg.library_dir.iterdir(), key=lambda p: _natural_key(p.name)):
+        if not series_dir.is_dir():
+            continue
+
+        names, incoming = _chapter_names(series_dir)
+        chapters = tuple(
+            ChapterState(
+                chapter=name,
+                image_count=len(list_page_images(series_dir / name))
+                if (series_dir / name).is_dir()
+                else 0,
+                engines=_translated_engines(cfg, series_dir.name, name),
+                incoming=name in incoming,
+            )
+            for name in names
+        )
+        meta = load_series_meta(cfg, series_dir.name)
+        states.append(
+            SeriesState(
+                series=series_dir.name,
+                title=meta.title,
+                cover=_series_cover(
+                    cfg,
+                    series_dir.name,
+                    (_cover_url(cfg, series_dir / name) for name in names),
+                    meta.cover,
+                ),
+                chapters=chapters,
+            )
+        )
+    return tuple(states)
+
+
+def _readable_chapters(cfg: Config, state: SeriesState) -> list[ChapterEntry]:
+    """Os capitulos do estado que o leitor consegue abrir.
+
+    `page_count` sai do JSON traduzido e nao do `image_count`: aquele conta as
+    paginas do capitulo processado, este conta arquivos no disco, e um capitulo de
+    tres capturas de rolagem tem 3 arquivos e 155 paginas.
+    """
+    entries = []
+    for chapter in state.chapters:
+        if not chapter.engines:
+            continue
+        first = load_chapter(cfg, state.series, chapter.chapter, chapter.engines[0])
+        entries.append(
+            ChapterEntry(
+                chapter=chapter.chapter,
+                page_count=len(first.pages) if first else 0,
+                engines=chapter.engines,
+                cover=_cover_url(cfg, cfg.library_dir / state.series / chapter.chapter),
+            )
+        )
+    return entries
 
 
 def build_library(cfg: Config) -> Library:
-    """Indice do que ja foi processado, com os motores e as capas por capitulo."""
-    chapters_by_series: dict[str, list[ChapterEntry]] = defaultdict(list)
-    for series, chapter in discover_chapters(cfg):
-        engines = _translated_engines(cfg, series, chapter)
-        if not engines:
+    """Indice do que ja foi processado, com os motores e as capas por capitulo.
+
+    Consome `discover_series` e filtra: capitulo sem motor nao tem o que abrir, e
+    serie sem nenhum capitulo legivel nao entra no indice. A caminhada do disco e
+    uma so; as duas funcoes respondem perguntas diferentes sobre ela - o painel
+    pergunta "o que existe" e o leitor pergunta "o que da para ler".
+
+    A capa e recalculada sobre os capitulos filtrados, e nao herdada do
+    `SeriesState`: a heranca vale "o primeiro capitulo que tiver capa", e o
+    primeiro do disco pode ser um que o leitor nem lista.
+    """
+    series: list[SeriesEntry] = []
+    for state in discover_series(cfg):
+        entries = _readable_chapters(cfg, state)
+        if not entries:
             continue
 
-        first = load_chapter(cfg, series, chapter, engines[0])
-        chapters_by_series[series].append(
-            ChapterEntry(
-                chapter=chapter,
-                page_count=len(first.pages) if first else 0,
-                engines=engines,
-                cover=_cover_url(cfg, cfg.library_dir / series / chapter),
+        declared = load_series_meta(cfg, state.series).cover
+        series.append(
+            SeriesEntry(
+                series=state.series,
+                title=state.title,
+                chapters=tuple(entries),
+                cover=_series_cover(cfg, state.series, (e.cover for e in entries), declared),
             )
         )
 
@@ -247,9 +353,7 @@ def build_library(cfg: Config) -> Library:
         generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
         library_base=cfg.paths.library,
         output_base=cfg.paths.output,
-        series=tuple(
-            _series_entry(cfg, series, chapters) for series, chapters in chapters_by_series.items()
-        ),
+        series=tuple(series),
     )
 
 
