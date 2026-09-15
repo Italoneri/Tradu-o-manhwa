@@ -150,13 +150,26 @@ function workHtml(series) {
   </a>`;
 }
 
+/* O painel so responde para 127.0.0.1. Mostrar o link no celular seria oferecer
+   um botao que responde 403 - e o celular nao tem o que fazer com ele. */
+const SERVED_LOCALLY = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(location.hostname);
+
+function panelLinkHtml() {
+  return SERVED_LOCALLY ? `<a class="btn btn-secondary" href="admin.html">Painel</a>` : "";
+}
+
 function renderShelf(library) {
   document.title = "Tinta";
   setChrome({ search: library.series.length > 0 });
   el.main.className = "";
 
   if (!library.series.length) {
-    el.main.innerHTML = `<p class="empty">Nenhum capítulo traduzido ainda.<br>Rode <code>mangatl process library/&lt;obra&gt;/&lt;capitulo&gt;</code>.</p>`;
+    // Do PC o caminho e o painel; do celular ele nao existe, e mandar rodar um
+    // comando de terminal la seria pior que dizer que nao ha nada.
+    const way = SERVED_LOCALLY
+      ? `<br>Abra o <a href="admin.html">painel</a> para subir o primeiro.`
+      : `<br>Suba um capítulo pelo PC que serve esta biblioteca.`;
+    el.main.innerHTML = `<p class="empty">Nenhum capítulo traduzido ainda.${way}</p>`;
     return;
   }
 
@@ -166,7 +179,10 @@ function renderShelf(library) {
         <h1>Sua biblioteca</h1>
         <p>Ponha um <code>cover.jpg</code> na pasta da obra para dar capa a ela.</p>
       </div>
-      <span class="count">${library.series.length} ${library.series.length === 1 ? "obra" : "obras"}</span>
+      <div class="head-actions">
+        <span class="count">${library.series.length} ${library.series.length === 1 ? "obra" : "obras"}</span>
+        ${panelLinkHtml()}
+      </div>
     </div>
     <div class="shelf">${library.series.map(workHtml).join("")}</div>`;
 

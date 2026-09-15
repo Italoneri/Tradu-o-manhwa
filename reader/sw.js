@@ -14,8 +14,10 @@
    sao o volume.
 */
 
-const VERSION = "mangatl-v3";
+const VERSION = "mangatl-v4";
 const SHELL = ["./", "./index.html", "./app.js", "./overlay.js", "./style.css", "./manifest.webmanifest", "./icon.svg"];
+/* `admin.html` e `admin.js` ficam de fora: o painel so funciona com o servidor de
+   pe, e guarda-lo offline criaria uma tela que abre e nao faz nada. */
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -78,6 +80,9 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+  // O painel nunca passa pelo cache: `/api/` e estado vivo, e progresso cacheado
+  // e barra que nao anda.
+  if (url.pathname.startsWith("/api/")) return;
 
   event.respondWith(isImmutable(url) ? cacheFirst(request) : networkFirst(request));
 });
