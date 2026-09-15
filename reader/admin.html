@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#161826">
+<title>Painel · Tinta</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="bar">
+  <div class="bar-row">
+    <a class="back" href="index.html">
+      <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M224 128a8 8 0 0 1-8 8H59.31l58.35 58.34a8 8 0 0 1-11.32 11.32l-72-72a8 8 0 0 1 0-11.32l72-72a8 8 0 0 1 11.32 11.32L59.31 120H216a8 8 0 0 1 8 8Z"></path></svg>
+      <span>Biblioteca</span>
+    </a>
+
+    <div class="title">
+      <strong>Painel</strong>
+      <span id="health">verificando o servidor&hellip;</span>
+    </div>
+  </div>
+</header>
+
+<main id="main" class="admin" aria-live="polite">
+
+  <p class="flash" id="flash" hidden></p>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Obras</h2>
+      <button class="btn btn-secondary" id="toggle-new-series">Nova obra</button>
+    </div>
+
+    <form class="row" id="new-series" hidden>
+      <label class="field">
+        <span>pasta (não muda depois)</span>
+        <input id="new-slug" required placeholder="minha-obra" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>título de exibição</span>
+        <input id="new-title" placeholder="Minha Obra" autocomplete="off">
+      </label>
+      <button class="btn btn-primary" type="submit">Criar</button>
+    </form>
+
+    <div class="shelf" id="series-list"></div>
+  </section>
+
+  <section class="card" id="series-card" hidden>
+    <div class="card-head">
+      <h2 id="series-name"></h2>
+      <span class="count" id="series-slug"></span>
+    </div>
+
+    <form class="row" id="series-meta">
+      <label class="field">
+        <span>título</span>
+        <input id="meta-title" autocomplete="off">
+      </label>
+      <label class="field">
+        <span>estado</span>
+        <input id="meta-status" placeholder="em andamento" autocomplete="off">
+      </label>
+      <button class="btn btn-secondary" type="submit">Salvar</button>
+      <label class="btn btn-secondary file-button">
+        Trocar capa
+        <input id="cover-input" type="file" accept="image/*" hidden>
+      </label>
+    </form>
+
+    <h3>Capítulos</h3>
+    <div class="chapters" id="chapter-list"></div>
+
+    <h3>Glossário <span class="hint">impede o personagem de mudar de nome no capítulo seguinte</span></h3>
+    <table class="glossary">
+      <thead><tr><th>termo em inglês</th><th>tradução fixa</th><th></th></tr></thead>
+      <tbody id="glossary-rows"></tbody>
+    </table>
+    <div class="row">
+      <button class="btn btn-secondary" id="glossary-add">Adicionar linha</button>
+      <button class="btn btn-primary" id="glossary-save">Salvar glossário</button>
+    </div>
+  </section>
+
+  <section class="card" id="upload-card" hidden>
+    <div class="card-head">
+      <h2>Capítulo novo</h2>
+      <label class="field inline">
+        <span>número</span>
+        <input id="chapter-number" size="6" autocomplete="off">
+      </label>
+    </div>
+
+    <div class="drop" id="drop">
+      <strong>Arraste as imagens aqui</strong>
+      <span>ou um <code>.zip</code> / <code>.cbz</code></span>
+      <label class="btn btn-secondary file-button">
+        Escolher arquivos
+        <input id="file-input" type="file" multiple hidden>
+      </label>
+      <p class="hint">Captura de rolagem alta é fatiada sozinha no processamento, e a original fica guardada em <code>_source/</code>.</p>
+    </div>
+
+    <p class="hint" id="order-note" hidden>Esta é a ordem de leitura que vai valer — vem do nome do arquivo.</p>
+    <ol class="files" id="file-list"></ol>
+
+    <div class="row" id="upload-actions" hidden>
+      <button class="btn btn-primary" id="upload-start">Enviar e confirmar</button>
+      <button class="btn btn-ghost" id="upload-discard">Descartar</button>
+      <span class="count" id="upload-status"></span>
+    </div>
+    <div class="progress-track" id="upload-track" hidden><div class="progress-fill" id="upload-fill"></div></div>
+  </section>
+
+  <section class="card" id="job-card" hidden>
+    <div class="card-head">
+      <h2>Traduzir</h2>
+      <span class="count" id="job-target"></span>
+    </div>
+
+    <div class="row">
+      <label class="field inline">
+        <span>motor</span>
+        <select id="job-engine"></select>
+      </label>
+      <label class="check"><input type="checkbox" id="job-force"> refazer o OCR (<code>--force</code>)</label>
+      <label class="check"><input type="checkbox" id="job-dry"> só extrair (<code>--dry-run</code>)</label>
+      <button class="btn btn-primary" id="job-start">Traduzir</button>
+    </div>
+    <p class="hint" id="engine-note" hidden></p>
+
+    <div id="job-view" hidden>
+      <div class="row">
+        <span class="count" id="job-state"></span>
+        <span class="count" id="job-phase"></span>
+      </div>
+      <div class="progress-track"><div class="progress-fill" id="job-fill"></div></div>
+      <pre class="log" id="job-log"></pre>
+      <p class="hint">Não dá para cancelar: não há ponto de parada seguro no meio de um OCR. Deixe terminar ou reinicie o servidor.</p>
+      <a class="btn btn-primary" id="job-read" hidden>Ler o capítulo</a>
+    </div>
+  </section>
+
+</main>
+
+<script type="module" src="admin.js"></script>
+</body>
+</html>

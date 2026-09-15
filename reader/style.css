@@ -426,3 +426,143 @@ body.hide-overlay .bubble { display: none; }
   .strip { margin-inline: calc(var(--space-4) * -1); }
   .head h1 { font-size: 24px; }
 }
+
+/* ---------- painel ---------- */
+
+/* Mesma folha do leitor de proposito: o painel nao e outro produto, e a mesma
+   biblioteca vista por quem pode escrever nela. Os tokens, os botoes e a barra de
+   progresso ja existem - o que entra aqui e so o que a tela de escrita precisa. */
+
+.head-actions { display: flex; align-items: center; gap: var(--space-4); flex: none; }
+
+.admin { display: flex; flex-direction: column; gap: var(--space-8); max-width: 900px; }
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: var(--space-8);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+.card-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-6); }
+.card h2 { margin: 0; font-weight: 500; font-size: 18px; }
+.card h3 { margin: var(--space-4) 0 0; font-weight: 500; font-size: 14px; color: var(--n-500); }
+
+.row { display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--space-4); }
+
+.field { display: flex; flex-direction: column; gap: var(--space-2); flex: 1 1 200px; }
+.field.inline { flex: 0 0 auto; }
+.field span { font-size: 12px; color: var(--n-500); }
+.field input, .field select {
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  caret-color: var(--accent);
+  background: var(--bg);
+  border: 1px solid var(--n-800);
+  border-radius: var(--radius-sm);
+  padding: 7px var(--space-3);
+}
+.field input:focus-visible, .field select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-900);
+}
+
+.check { display: inline-flex; align-items: center; gap: var(--space-2); font-size: 13px; color: var(--n-500); }
+.hint { margin: 0; font-size: 12.5px; color: var(--n-600); }
+.card code { background: var(--n-900); padding: 1px 5px; border-radius: var(--radius-sm); font-size: 12px; }
+
+/* O input de arquivo nativo nao aceita estilo; o label vira o botao e o input
+   fica escondido dentro dele. */
+.file-button { cursor: pointer; }
+
+.flash { margin: 0; padding: var(--space-4) var(--space-6); border-radius: var(--radius-md); font-size: 13.5px; }
+.flash-erro { background: color-mix(in srgb, #d96b6b 18%, var(--surface)); border: 1px solid #d96b6b; }
+.flash-ok { background: var(--accent-900); border: 1px solid var(--accent-700); }
+
+/* A estante do painel e a mesma do leitor, mas cada carta e um botao: aqui ela
+   seleciona em vez de navegar. */
+.shelf .work {
+  font: inherit;
+  text-align: left;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  padding: var(--space-2);
+  cursor: pointer;
+}
+.shelf .work.chosen { border-color: var(--accent); background: var(--accent-900); }
+.shelf .work.chosen:hover { opacity: 1; }
+
+.tag-warn { background: var(--accent-800); color: var(--accent-300); }
+
+.chapter .btn { margin-left: var(--space-4); }
+
+.glossary { width: 100%; border-collapse: collapse; font-size: 13px; }
+.glossary th { text-align: left; font-weight: 500; color: var(--n-600); padding-bottom: var(--space-2); }
+.glossary td { padding: 2px 0; }
+.glossary td:first-child { padding-right: var(--space-3); width: 40%; }
+.glossary input {
+  width: 100%;
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--n-800);
+  border-radius: var(--radius-sm);
+  padding: 5px var(--space-3);
+}
+
+.drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-8);
+  text-align: center;
+  border: 1px dashed var(--n-700);
+  border-radius: var(--radius-md);
+  color: var(--n-500);
+}
+.drop.over { border-color: var(--accent); background: var(--accent-900); }
+.drop strong { color: var(--ink); font-weight: 500; }
+
+.files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.file {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  font-size: 13px;
+}
+.file .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file .thumb { flex: none; width: 34px; height: 46px; border-radius: var(--radius-sm); overflow: hidden; background: var(--n-900); }
+.file .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.file .thumb .cover-empty { font-size: 11px; }
+.file-enviado { color: var(--n-600); }
+.file-falhou { box-shadow: inset 0 0 0 1px #d96b6b; }
+
+/* Rolando e monoespacado: e log de verdade, e quem olha esta procurando a linha
+   que explica por que parou. */
+.log {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: var(--space-4);
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, "Cascadia Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--n-500);
+  white-space: pre-wrap;
+}
+
+@media (max-width: 520px) {
+  .card { padding: var(--space-6); }
+  .card-head { flex-direction: column; align-items: flex-start; gap: var(--space-3); }
+}
