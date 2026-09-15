@@ -408,6 +408,25 @@ function pollJob(id) {
   }, 1000);
 }
 
+/** Reencontra o que ficou rodando enquanto a aba estava fechada.
+ *
+ * O job vive na thread do servidor e nao na pagina: fechar a aba nao para nada, e
+ * reabrir sem procurar deixaria a tela fingindo que nao ha nada acontecendo - com
+ * o botao de traduzir liberado para disparar um segundo que so tomaria 409.
+ */
+async function restoreJob() {
+  const payload = await api("/jobs").catch(() => null);
+  const job = payload && payload.jobs[0];
+  if (!job) return;
+
+  if (job.series !== state.selected && state.series.some((entry) => entry.series === job.series)) {
+    await selectSeries(job.series);
+  }
+  openJob(job.chapter);
+  renderJob(job);
+  if (job.state === "running") pollJob(job.id);
+}
+
 async function startJob() {
   const job = await api("/jobs", {
     method: "POST",
@@ -579,6 +598,7 @@ async function main() {
   }
 
   await guard(() => loadSeries(false));
+  await guard(restoreJob);
 }
 
 main();
