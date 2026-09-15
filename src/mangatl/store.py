@@ -183,7 +183,13 @@ def is_page_current(extraction: Extraction | None, image: Path, pipeline_version
 
 
 def discover_chapters(cfg: Config) -> Iterable[tuple[str, str]]:
-    """Pares (serie, capitulo) presentes na biblioteca de entrada."""
+    """Pares (serie, capitulo) presentes na biblioteca de entrada.
+
+    Area de espera fica de fora. Sem isso um upload interrompido vira capitulo
+    para o `process-all`: ele traduz a metade que chegou e, como o pipeline e
+    idempotente por sha, as paginas que faltavam entram depois sem refazer o
+    resto - mas a numeracao das falas ja saiu errada.
+    """
     if not cfg.library_dir.is_dir():
         return []
     pairs: list[tuple[str, str]] = []
@@ -191,6 +197,8 @@ def discover_chapters(cfg: Config) -> Iterable[tuple[str, str]]:
         if not series_dir.is_dir():
             continue
         for chapter_dir in sorted(series_dir.iterdir(), key=lambda p: _natural_key(p.name)):
+            if chapter_dir.name.endswith(INCOMING_SUFFIX):
+                continue
             if chapter_dir.is_dir() and list_page_images(chapter_dir):
                 pairs.append((series_dir.name, chapter_dir.name))
     return pairs

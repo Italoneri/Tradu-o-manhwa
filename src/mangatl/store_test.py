@@ -398,3 +398,11 @@ def test_keeps_an_untranslated_series_out_of_the_reader_index(cfg: Config):
 
     assert len(discover_series(cfg)) == 1
     assert build_library(cfg).series == ()
+
+
+def test_keeps_an_open_upload_out_of_the_chapters_to_process(cfg: Config):
+    """Senao o process-all traduz a metade que chegou e a numeracao sai errada."""
+    write_pages(cfg, "serie", "001", ["1.jpg"])
+    write_pages(cfg, "serie", "002.incoming", ["1.jpg"])
+
+    assert list(discover_chapters(cfg)) == [("serie", "001")]
